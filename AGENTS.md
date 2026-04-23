@@ -1,11 +1,15 @@
 # Agent Bootstrap — clavifaber
 
+## First thing
+
+Run `bd list --status open` to see what's already on the table.
+
 ## Rust style
 
 Follow [`~/git/tools-documentation/rust/style.md`](../tools-documentation/rust/style.md):
 methods on types, typed newtypes for domain values (keygrip, cert, key
 material — not raw `String`/`Vec<u8>` at boundaries), single-object I/O,
-manual `Error` enum (no thiserror/anyhow), trait-domain rule.
+`thiserror`-derived `Error` enum (no `anyhow`, no `eyre`), trait-domain rule.
 
 The current `src/` was copied verbatim from `criomos-archive/src/clavifaber`
 during the split; refactor toward the style as you touch each module.
