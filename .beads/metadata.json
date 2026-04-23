@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "clavi",
+  "project_id": "b961da58-9fb1-4ffd-925b-2ef2ac3e446a"
+}
