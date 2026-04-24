@@ -13,5 +13,30 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = inputs: inputs.blueprint { inherit inputs; };
+  outputs =
+    inputs:
+    let
+      blueprintOutputs = inputs.blueprint { inherit inputs; };
+      lib = inputs.nixpkgs.lib;
+      packageCheckNames =
+        system:
+        builtins.listToAttrs (
+          map (packageName: {
+            name = "pkgs-${packageName}";
+            value = true;
+          }) (builtins.attrNames (blueprintOutputs.packages.${system} or { }))
+        );
+      derivationChecks = builtins.mapAttrs (
+        system: checks:
+        lib.filterAttrs (
+          name: value:
+          lib.isDerivation value
+          && (!lib.hasPrefix "pkgs-" name || builtins.hasAttr name (packageCheckNames system))
+        ) checks
+      ) (blueprintOutputs.checks or { });
+    in
+    blueprintOutputs
+    // {
+      checks = derivationChecks;
+    };
 }
