@@ -2,8 +2,7 @@
   description = "clavifaber — GPG → X.509 certificate tool for CriomOS WiFi PKI + node-identity complex";
 
   inputs = {
-    # Pinned in lockstep with CriomOS for /nix/store cache reuse.
-    nixpkgs.url = "github:NixOS/nixpkgs/b12141ef619e0a9c1c84dc8c684040326f27cdcc";
+    nixpkgs.url = "github:NixOS/nixpkgs?ref=nixos-unstable";
 
     blueprint.url = "github:numtide/blueprint";
     blueprint.inputs.nixpkgs.follows = "nixpkgs";
