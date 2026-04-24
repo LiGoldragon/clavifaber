@@ -1,13 +1,13 @@
-{ pkgs, inputs, system, ... }:
+{ pkgs, inputs, system, flake, ... }:
 let
-  rustToolchain =
-    (inputs.rust-overlay.lib.mkRustBin { } pkgs).stable.latest.default.override {
-      extensions = [ "rust-src" "rust-analyzer" "clippy" ];
-    };
+  toolchain = inputs.fenix.packages.${system}.fromToolchainFile {
+    file = flake + "/rust-toolchain.toml";
+    sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+  };
 in
 pkgs.mkShell {
   packages = [
-    rustToolchain
+    toolchain
     pkgs.gnupg
     pkgs.nixfmt-rfc-style
   ];
