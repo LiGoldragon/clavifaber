@@ -1,26 +1,25 @@
-use std::fmt;
 use std::path::PathBuf;
+use thiserror::Error;
 
+#[derive(Debug, Error)]
 pub enum Error {
-    Io { path: PathBuf, source: std::io::Error },
-    Gpg(String),
-    Parse(String),
-    Corrupt { path: PathBuf, detail: String },
-    Certificate(String),
-}
+    #[error("{path}: {source}", path = path.display())]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            Error::Gpg(msg) => write!(f, "gpg: {msg}"),
-            Error::Parse(msg) => write!(f, "parse: {msg}"),
-            Error::Corrupt { path, detail } => {
-                write!(f, "corrupt key at {}: {detail}", path.display())
-            }
-            Error::Certificate(msg) => write!(f, "certificate: {msg}"),
-        }
-    }
+    #[error("gpg: {0}")]
+    Gpg(String),
+
+    #[error("parse: {0}")]
+    Parse(String),
+
+    #[error("corrupt key at {path}: {detail}", path = path.display())]
+    Corrupt { path: PathBuf, detail: String },
+
+    #[error("certificate: {0}")]
+    Certificate(String),
 }
 
 impl From<String> for Error {
@@ -34,3 +33,5 @@ impl From<&str> for Error {
         Error::Parse(s.to_string())
     }
 }
+
+pub type Result<T> = std::result::Result<T, Error>;

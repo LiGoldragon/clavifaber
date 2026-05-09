@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -gt 0 ]; then
+  CLAVIFABER=("$@")
+else
+  CLAVIFABER=(cargo run --quiet --)
+fi
+
+TEST_DIRECTORY=$(mktemp -d "/tmp/clavifaber-pki-test.XXXXXX")
+GNUPGHOME="$TEST_DIRECTORY/gpg"
+
+cleanup() {
+  gpgconf --homedir "$GNUPGHOME" --kill gpg-agent 2>/dev/null || true
+  rm -rf "$TEST_DIRECTORY"
+}
+trap cleanup EXIT
+
+echo "=== PKI lifecycle test ==="
+echo "    test directory: $TEST_DIRECTORY"
+
+echo ""
+echo "--- Phase 1: Generate test GPG Ed25519 key ---"
+mkdir -p "$GNUPGHOME"
+chmod 700 "$GNUPGHOME"
+
+KEY_GENERATION_BATCH="$TEST_DIRECTORY/keygen.batch"
+cat >"$KEY_GENERATION_BATCH" <<'BATCH'
+%no-protection
+Key-Type: eddsa
+Key-Curve: ed25519
+Key-Usage: sign
+Name-Real: Aedifico Test CA
+Name-Email: test@aedifico.criome
+Expire-Date: 0
+%commit
+BATCH
+
+export GNUPGHOME
+gpg --batch --gen-key "$KEY_GENERATION_BATCH" 2>&1 | grep -v "^$"
+
+KEYGRIP=$(gpg --list-secret-keys --with-keygrip --with-colons 2>/dev/null \
+  | grep '^grp:' | head -1 | cut -d: -f10)
+
+if [ -z "$KEYGRIP" ]; then
+  echo "FAIL: could not extract keygrip"
+  exit 1
+fi
+echo "    keygrip: $KEYGRIP"
+
+gpg-connect-agent /bye 2>/dev/null
+
+echo ""
+echo "--- Phase 2: Generate node identity directory ---"
+NODE_DIRECTORY="$TEST_DIRECTORY/identity-probus"
+"${CLAVIFABER[@]}" complex-init --dir "$NODE_DIRECTORY"
+NODE_SSH_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
+echo "    node public key: $NODE_SSH_PUBLIC_KEY"
+
+"${CLAVIFABER[@]}" derive-pubkey --dir "$NODE_DIRECTORY" >/dev/null
+DERIVED_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
+if [ "$DERIVED_PUBLIC_KEY" != "$NODE_SSH_PUBLIC_KEY" ]; then
+  echo "FAIL: derive-pubkey diverged from init"
+  exit 1
+fi
+echo "    derive-pubkey: OK (matches)"
+
+echo ""
+echo "--- Phase 3: Create CA certificate ---"
+CA_CERTIFICATE="$TEST_DIRECTORY/ca.pem"
+"${CLAVIFABER[@]}" ca-init --keygrip "$KEYGRIP" --cn "Aedifico Test CA" --out "$CA_CERTIFICATE"
+
+if [ ! -s "$CA_CERTIFICATE" ]; then
+  echo "FAIL: CA cert not created"
+  exit 1
+fi
+echo "    CA certificate: $(wc -c <"$CA_CERTIFICATE") bytes"
+
+SUBJECT=$(openssl x509 -in "$CA_CERTIFICATE" -noout -subject 2>/dev/null || echo "PARSE_FAIL")
+echo "    openssl subject: $SUBJECT"
+IS_CA=$(openssl x509 -in "$CA_CERTIFICATE" -noout -text 2>/dev/null | grep -c "CA:TRUE" || true)
+if [ "$IS_CA" -lt 1 ]; then
+  echo "FAIL: CA cert does not have CA:TRUE"
+  exit 1
+fi
+echo "    CA:TRUE constraint: OK"
+
+echo ""
+echo "--- Phase 4: Create server certificate ---"
+SERVER_CERTIFICATE="$TEST_DIRECTORY/server.pem"
+SERVER_PRIVATE_KEY="$TEST_DIRECTORY/server.key"
+"${CLAVIFABER[@]}" server-cert \
+  --ca-keygrip "$KEYGRIP" \
+  --ca-cert "$CA_CERTIFICATE" \
+  --cn "faber.criome" \
+  --out-cert "$SERVER_CERTIFICATE" \
+  --out-key "$SERVER_PRIVATE_KEY"
+
+if [ ! -s "$SERVER_CERTIFICATE" ] || [ ! -s "$SERVER_PRIVATE_KEY" ]; then
+  echo "FAIL: server cert/key not created"
+  exit 1
+fi
+echo "    server certificate: $(wc -c <"$SERVER_CERTIFICATE") bytes"
+echo "    server private key: $(wc -c <"$SERVER_PRIVATE_KEY") bytes"
+
+"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$SERVER_CERTIFICATE"
+echo "    verify chain: OK"
+
+echo ""
+echo "--- Phase 5: Create node certificate ---"
+NODE_CERTIFICATE="$TEST_DIRECTORY/probus.pem"
+"${CLAVIFABER[@]}" node-cert \
+  --ca-keygrip "$KEYGRIP" \
+  --ca-cert "$CA_CERTIFICATE" \
+  --ssh-pubkey "$NODE_SSH_PUBLIC_KEY" \
+  --cn "probus@aedifico" \
+  --out "$NODE_CERTIFICATE"
+
+if [ ! -s "$NODE_CERTIFICATE" ]; then
+  echo "FAIL: node cert not created"
+  exit 1
+fi
+echo "    node certificate: $(wc -c <"$NODE_CERTIFICATE") bytes"
+
+"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$NODE_CERTIFICATE"
+echo "    verify chain: OK"
+NODE_SUBJECT=$(openssl x509 -in "$NODE_CERTIFICATE" -noout -subject 2>/dev/null || echo "PARSE_FAIL")
+echo "    openssl subject: $NODE_SUBJECT"
+
+echo ""
+echo "--- Phase 6: Corruption recovery ---"
+CORRUPT_DIRECTORY="$TEST_DIRECTORY/identity-corrupt"
+"${CLAVIFABER[@]}" complex-init --dir "$CORRUPT_DIRECTORY" >/dev/null
+ORIGINAL_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
+
+echo "GARBAGE" >"$CORRUPT_DIRECTORY/key.pem"
+
+"${CLAVIFABER[@]}" complex-init --dir "$CORRUPT_DIRECTORY" >/dev/null 2>&1
+NEW_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
+
+if [ "$ORIGINAL_PUBLIC_KEY" = "$NEW_PUBLIC_KEY" ]; then
+  echo "FAIL: key not regenerated after corruption"
+  exit 1
+fi
+
+BROKEN_COUNT=$(find "$CORRUPT_DIRECTORY" -maxdepth 1 -name 'key.pem.broken.*' | wc -l)
+if [ "$BROKEN_COUNT" -lt 1 ]; then
+  echo "FAIL: broken key not preserved"
+  exit 1
+fi
+echo "    corrupt key preserved: $BROKEN_COUNT broken file(s)"
+echo "    new key generated: OK"
+
+echo ""
+echo "--- Phase 7: Second node certificate ---"
+SECOND_NODE_DIRECTORY="$TEST_DIRECTORY/identity-faber"
+"${CLAVIFABER[@]}" complex-init --dir "$SECOND_NODE_DIRECTORY"
+SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh.pub")
+
+SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
+"${CLAVIFABER[@]}" node-cert \
+  --ca-keygrip "$KEYGRIP" \
+  --ca-cert "$CA_CERTIFICATE" \
+  --ssh-pubkey "$SECOND_NODE_SSH_PUBLIC_KEY" \
+  --cn "faber@aedifico" \
+  --out "$SECOND_NODE_CERTIFICATE"
+
+"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$SECOND_NODE_CERTIFICATE"
+echo "    second node cert verified: OK"
+
+echo ""
+echo "=== ALL TESTS PASSED ==="

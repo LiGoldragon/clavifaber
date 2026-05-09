@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::gpg_agent::{parse_sig_sexp, GpgAgent};
+use crate::gpg_agent::GpgAgent;
 use const_oid::db::rfc5280::{
     ID_CE_BASIC_CONSTRAINTS, ID_CE_KEY_USAGE, ID_CE_SUBJECT_KEY_IDENTIFIER,
 };
@@ -40,8 +40,8 @@ fn build_name(cn: &str, org: Option<&str>) -> Result<Name, Error> {
         oid: CN_OID,
         value: cn_value,
     };
-    let cn_set = SetOfVec::try_from(vec![cn_atv])
-        .map_err(|e| Error::Certificate(format!("cn RDN: {e}")))?;
+    let cn_set =
+        SetOfVec::try_from(vec![cn_atv]).map_err(|e| Error::Certificate(format!("cn RDN: {e}")))?;
     rdns.push(RelativeDistinguishedName::from(cn_set));
 
     Ok(Name::from(RdnSequence::from(rdns)))
@@ -51,7 +51,7 @@ fn generate_serial(spki_der: &[u8]) -> Result<SerialNumber, Error> {
     let mut hasher = Sha256::new();
     hasher.update(spki_der);
     hasher.update(
-        &std::time::SystemTime::now()
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
@@ -132,8 +132,7 @@ fn sign_tbs(keygrip: &str, tbs_der: &[u8]) -> Result<Vec<u8>, Error> {
     let hash = Sha256::digest(tbs_der);
     let hash_hex = hex::encode(hash);
     let mut agent = GpgAgent::connect()?;
-    let sig_sexp = agent.sign(keygrip, &hash_hex)?;
-    parse_sig_sexp(&sig_sexp)
+    agent.sign(keygrip, &hash_hex)
 }
 
 fn build_cert(tbs: TbsCertificate, keygrip: &str) -> Result<Vec<u8>, Error> {
@@ -245,8 +244,8 @@ pub fn create_server_cert(
     let oid_der = SECP256R1_OID
         .to_der()
         .map_err(|e| Error::Certificate(format!("OID encode: {e}")))?;
-    let params = Any::from_der(&oid_der)
-        .map_err(|e| Error::Certificate(format!("param encode: {e}")))?;
+    let params =
+        Any::from_der(&oid_der).map_err(|e| Error::Certificate(format!("param encode: {e}")))?;
 
     let server_spki = SubjectPublicKeyInfoOwned {
         algorithm: AlgorithmIdentifierOwned {
@@ -337,10 +336,7 @@ pub fn verify_cert_chain(ca_cert_der: &[u8], cert_der: &[u8]) -> Result<(), Erro
 
     let sig_raw = cert.signature.raw_bytes();
     let sig_bytes: [u8; 64] = sig_raw.try_into().map_err(|_| {
-        Error::Certificate(format!(
-            "signature is {} bytes, expected 64",
-            sig_raw.len()
-        ))
+        Error::Certificate(format!("signature is {} bytes, expected 64", sig_raw.len()))
     })?;
     let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
 

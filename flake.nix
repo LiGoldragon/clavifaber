@@ -1,11 +1,8 @@
 {
-  description = "clavifaber — GPG → X.509 certificate tool for CriomOS WiFi PKI + node-identity complex";
+  description = "clavifaber - host key-material provisioning for CriomOS";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs?ref=nixos-unstable";
-
-    blueprint.url = "github:numtide/blueprint";
-    blueprint.inputs.nixpkgs.follows = "nixpkgs";
+    nixpkgs.url = "github:LiGoldragon/nixpkgs?ref=main";
 
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
@@ -14,29 +11,140 @@
   };
 
   outputs =
-    inputs:
+    {
+      self,
+      nixpkgs,
+      fenix,
+      crane,
+    }:
     let
-      blueprintOutputs = inputs.blueprint { inherit inputs; };
-      lib = inputs.nixpkgs.lib;
-      packageCheckNames =
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+
+      forSystems = function: nixpkgs.lib.genAttrs systems (system: function system);
+
+      mkContext =
         system:
-        builtins.listToAttrs (
-          map (packageName: {
-            name = "pkgs-${packageName}";
-            value = true;
-          }) (builtins.attrNames (blueprintOutputs.packages.${system} or { }))
-        );
-      derivationChecks = builtins.mapAttrs (
-        system: checks:
-        lib.filterAttrs (
-          name: value:
-          lib.isDerivation value
-          && (!lib.hasPrefix "pkgs-" name || builtins.hasAttr name (packageCheckNames system))
-        ) checks
-      ) (blueprintOutputs.checks or { });
+        let
+          pkgs = import nixpkgs { inherit system; };
+          toolchain = fenix.packages.${system}.fromToolchainFile {
+            file = ./rust-toolchain.toml;
+            sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+          };
+          craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+          src = craneLib.cleanCargoSource ./.;
+          commonArgs = {
+            inherit src;
+            strictDeps = true;
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        in
+        {
+          inherit
+            pkgs
+            toolchain
+            craneLib
+            src
+            commonArgs
+            cargoArtifacts
+            ;
+        };
     in
-    blueprintOutputs
-    // {
-      checks = derivationChecks;
+    {
+      packages = forSystems (
+        system:
+        let
+          context = mkContext system;
+          clavifaber = context.craneLib.buildPackage (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              pname = "clavifaber";
+              meta.mainProgram = "clavifaber";
+            }
+          );
+          testPkiLifecycle = context.pkgs.writeShellApplication {
+            name = "test-pki-lifecycle";
+            runtimeInputs = [
+              clavifaber
+              context.pkgs.coreutils
+              context.pkgs.gnugrep
+              context.pkgs.gnupg
+              context.pkgs.openssl
+            ];
+            text = ''
+              exec bash ${./scripts/test-pki-lifecycle} clavifaber
+            '';
+          };
+        in
+        {
+          default = clavifaber;
+          inherit testPkiLifecycle;
+        }
+      );
+
+      apps = forSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/clavifaber";
+        };
+        test-pki-lifecycle = {
+          type = "app";
+          program = "${self.packages.${system}.testPkiLifecycle}/bin/test-pki-lifecycle";
+        };
+      });
+
+      checks = forSystems (
+        system:
+        let
+          context = mkContext system;
+        in
+        {
+          build = context.craneLib.cargoBuild (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+            }
+          );
+          test = context.craneLib.cargoTest (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+            }
+          );
+          fmt = context.craneLib.cargoFmt {
+            inherit (context) src;
+          };
+          clippy = context.craneLib.cargoClippy (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- -D warnings";
+            }
+          );
+        }
+      );
+
+      devShells = forSystems (
+        system:
+        let
+          context = mkContext system;
+        in
+        {
+          default = context.pkgs.mkShell {
+            packages = [
+              context.toolchain
+              context.pkgs.gnupg
+              context.pkgs.jujutsu
+              context.pkgs.nixfmt
+              context.pkgs.openssl
+            ];
+          };
+        }
+      );
+
+      formatter = forSystems (system: (mkContext system).pkgs.nixfmt);
     };
 }

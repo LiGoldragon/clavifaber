@@ -1,5 +1,5 @@
-use crate::error::Error;
-use crate::util::decode_assuan_bytes;
+use crate::error::{Error, Result};
+use crate::util::AssuanLine;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -10,7 +10,7 @@ pub struct GpgAgent {
 }
 
 impl GpgAgent {
-    pub fn connect() -> Result<Self, Error> {
+    pub fn connect() -> Result<Self> {
         let output = Command::new("gpgconf")
             .args(["--list-dirs", "agent-socket"])
             .output()
@@ -18,7 +18,9 @@ impl GpgAgent {
 
         let socket_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if socket_path.is_empty() {
-            return Err(Error::Gpg("gpgconf returned empty agent-socket path".into()));
+            return Err(Error::Gpg(
+                "gpgconf returned empty agent-socket path".into(),
+            ));
         }
 
         let raw = UnixStream::connect(&socket_path)
@@ -37,7 +39,7 @@ impl GpgAgent {
 
     /// Sign a hash using the specified keygrip.
     /// Returns raw signature bytes (Ed25519: 64 bytes, ECDSA: DER-encoded).
-    pub fn sign(&mut self, keygrip: &str, hash_hex: &str) -> Result<Vec<u8>, Error> {
+    pub fn sign(&mut self, keygrip: &str, hash_hex: &str) -> Result<Vec<u8>> {
         self.send_command(&format!("SIGKEY {keygrip}"))?;
         self.expect_ok()?;
 
@@ -45,19 +47,21 @@ impl GpgAgent {
         self.expect_ok()?;
 
         self.send_command("PKSIGN")?;
-        self.read_data_response()
+        let signature_expression = self.read_data_response()?;
+        SignatureExpression::new(&signature_expression).signature_bytes()
     }
 
     /// Read a public key from gpg-agent using the READKEY command.
     /// Returns the raw Ed25519 public key bytes (32 bytes).
-    pub fn readkey(&mut self, keygrip: &str) -> Result<Vec<u8>, Error> {
+    pub fn readkey(&mut self, keygrip: &str) -> Result<Vec<u8>> {
         self.send_command(&format!("READKEY {keygrip}"))?;
         let data = self.read_data_response()?;
-        extract_sexp_q_value(&data)
-            .ok_or_else(|| Error::Gpg("could not extract public key from READKEY S-expression".into()))
+        extract_sexp_q_value(&data).ok_or_else(|| {
+            Error::Gpg("could not extract public key from READKEY S-expression".into())
+        })
     }
 
-    fn send_command(&mut self, cmd: &str) -> Result<(), Error> {
+    fn send_command(&mut self, cmd: &str) -> Result<()> {
         let stream = self.stream.get_mut();
         stream
             .write_all(format!("{cmd}\n").as_bytes())
@@ -67,7 +71,7 @@ impl GpgAgent {
             .map_err(|e| Error::Gpg(format!("flush: {e}")))
     }
 
-    fn read_line(&mut self) -> Result<String, Error> {
+    fn read_line(&mut self) -> Result<String> {
         let mut line = String::new();
         self.stream
             .read_line(&mut line)
@@ -75,18 +79,18 @@ impl GpgAgent {
         Ok(line.trim_end().to_string())
     }
 
-    fn read_raw_line(&mut self) -> Result<Vec<u8>, Error> {
-        let mut buf = Vec::new();
+    fn read_raw_line(&mut self) -> Result<Vec<u8>> {
+        let mut raw_line = Vec::new();
         self.stream
-            .read_until(b'\n', &mut buf)
+            .read_until(b'\n', &mut raw_line)
             .map_err(|e| Error::Gpg(format!("read: {e}")))?;
-        while buf.last() == Some(&b'\n') || buf.last() == Some(&b'\r') {
-            buf.pop();
+        while raw_line.last() == Some(&b'\n') || raw_line.last() == Some(&b'\r') {
+            raw_line.pop();
         }
-        Ok(buf)
+        Ok(raw_line)
     }
 
-    fn expect_ok(&mut self) -> Result<(), Error> {
+    fn expect_ok(&mut self) -> Result<()> {
         let line = self.read_line()?;
         if line.starts_with("OK") {
             Ok(())
@@ -97,12 +101,12 @@ impl GpgAgent {
         }
     }
 
-    fn read_data_response(&mut self) -> Result<Vec<u8>, Error> {
+    fn read_data_response(&mut self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
         loop {
             let line = self.read_raw_line()?;
             if line.starts_with(b"D ") {
-                data.extend(decode_assuan_bytes(&line[2..]));
+                data.extend(AssuanLine::new(&line[2..]).decoded_bytes());
             } else if line.starts_with(b"OK") {
                 break;
             } else if line.starts_with(b"ERR") {
@@ -115,17 +119,26 @@ impl GpgAgent {
     }
 }
 
-/// Extract the raw signature value from gpg-agent's S-expression response.
-pub fn parse_sig_sexp(data: &[u8]) -> Result<Vec<u8>, Error> {
-    let r_bytes = extract_sexp_value(data, b"r")
-        .ok_or_else(|| Error::Gpg("missing 'r' in signature S-expression".into()))?;
-    let s_bytes = extract_sexp_value(data, b"s")
-        .ok_or_else(|| Error::Gpg("missing 's' in signature S-expression".into()))?;
+struct SignatureExpression<'a> {
+    data: &'a [u8],
+}
 
-    let mut sig = Vec::with_capacity(r_bytes.len() + s_bytes.len());
-    sig.extend_from_slice(r_bytes);
-    sig.extend_from_slice(s_bytes);
-    Ok(sig)
+impl<'a> SignatureExpression<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+
+    fn signature_bytes(&self) -> Result<Vec<u8>> {
+        let first_component = extract_sexp_value(self.data, b"r")
+            .ok_or_else(|| Error::Gpg("missing 'r' in signature S-expression".into()))?;
+        let second_component = extract_sexp_value(self.data, b"s")
+            .ok_or_else(|| Error::Gpg("missing 's' in signature S-expression".into()))?;
+
+        let mut signature = Vec::with_capacity(first_component.len() + second_component.len());
+        signature.extend_from_slice(first_component);
+        signature.extend_from_slice(second_component);
+        Ok(signature)
+    }
 }
 
 fn extract_sexp_value<'a>(data: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {

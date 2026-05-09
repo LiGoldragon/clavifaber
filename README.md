@@ -1,11 +1,12 @@
 # clavifaber
 
-GPG → X.509 certificate tool for CriomOS. Derives a node-identity complex
-(Ed25519 keypair), issues a self-signed CA certificate from a GPG Ed25519 key,
-and issues server/node certificates for WiFi PKI (EAP-TLS).
+ClaviFaber forms host key material for CriomOS and produces the public
+projection records the rest of the cluster needs. The current implementation
+derives a node identity directory, issues a self-signed CA certificate from a
+GPG Ed25519 key, and issues server/node certificates for WiFi PKI (EAP-TLS).
 
-Split out from legacy CriomOS `src/clavifaber/` so the tool can be consumed
-independently and versioned on its own cadence.
+The repository is intentionally separate from CriomOS so the key-management
+tool can be versioned and tested on its own cadence.
 
 ## Commands
 
@@ -16,22 +17,30 @@ independently and versioned on its own cadence.
 - `clavifaber derive-pubkey --dir <D>`
 - `clavifaber verify --ca-cert ca.crt --cert some.crt`
 
-## Layout
+The Clap command surface is a compatibility bridge. New operator-facing work
+should target the Nota request surface described in `ARCHITECTURE.md`.
 
-Blueprint flake:
+## Development
 
-- `src/`, `Cargo.toml`, `Cargo.lock` — the Rust crate.
-- `packages/default.nix` → `packages.<system>.default` (wrapped with GPG on PATH).
-- `devshell.nix`, `formatter.nix`.
+```sh
+nix flake check
+nix run .#test-pki-lifecycle
+```
+
+`nix flake check` runs the pure Rust build, tests, formatting, and clippy
+checks. `nix run .#test-pki-lifecycle` runs the impure GPG/gpg-agent lifecycle
+test in a temporary home.
 
 ## Consumption
 
 ```nix
 inputs.clavifaber.url = "github:LiGoldragon/clavifaber";
-# → inputs.clavifaber.packages.${system}.default
+# inputs.clavifaber.packages.${system}.default
 ```
 
 ## Conventions
 
 - Jujutsu (`jj`) for all VCS. Never `git` CLI.
 - Mentci three-tuple commit format.
+- See `ARCHITECTURE.md` and `skills.md` before changing private-material or
+  publication behavior.
