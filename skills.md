@@ -8,6 +8,10 @@ ClaviFaber owns local host key-material formation and public projection records
 for CriomOS. It does not own the cluster database schema, the deployment graph,
 or host activation orchestration.
 
+The cluster database writer belongs in the cluster-management/deployment layer
+that owns the database revision. ClaviFaber emits `PublicKeyPublication`; it
+does not patch cluster database files.
+
 ## Safety
 
 - Never print, snapshot, or place private key material in the Nix store.
@@ -24,6 +28,8 @@ or host activation orchestration.
 - Prefer one crate error enum with `thiserror`.
 - Use full English field and variable names. Keep compatibility flag spellings
   behind Clap attributes only while the compatibility CLI exists.
+- New operator behavior should enter through `ClaviFaberRequest` and return
+  `ClaviFaberResponse`.
 
 ## Nix And Tests
 

@@ -10,6 +10,15 @@ tool can be versioned and tested on its own cadence.
 
 ## Commands
 
+Preferred operator surface:
+
+```sh
+clavifaber '(IdentityDirectoryInitialization "/var/lib/clavifaber")'
+clavifaber '(PublicKeyPublicationRequest probus "/var/lib/clavifaber" None None None)'
+```
+
+Compatibility commands:
+
 - `clavifaber ca-init --keygrip <G> --cn <N> --out ca.crt`
 - `clavifaber server-cert --ca-keygrip <G> --ca-cert ca.crt --cn <N> --out-cert server.crt --out-key server.key`
 - `clavifaber node-cert --ca-keygrip <G> --ca-cert ca.crt --ssh-pubkey <S> --cn <N> --out node.crt`
@@ -18,7 +27,7 @@ tool can be versioned and tested on its own cadence.
 - `clavifaber verify --ca-cert ca.crt --cert some.crt`
 
 The Clap command surface is a compatibility bridge. New operator-facing work
-should target the Nota request surface described in `ARCHITECTURE.md`.
+targets the Nota request surface described in `ARCHITECTURE.md`.
 
 ## Development
 
@@ -30,6 +39,11 @@ nix run .#test-pki-lifecycle
 `nix flake check` runs the pure Rust build, tests, formatting, and clippy
 checks. `nix run .#test-pki-lifecycle` runs the impure GPG/gpg-agent lifecycle
 test in a temporary home.
+
+Pure tests include process-level coverage for the compatibility CLI and the
+inline Nota request surface. The impure lifecycle covers GPG key creation, CA
+certificate generation, server certificate generation, node certificate
+generation, verification, and identity corruption recovery.
 
 ## Consumption
 

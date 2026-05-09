@@ -20,6 +20,12 @@ pub enum Error {
 
     #[error("certificate: {0}")]
     Certificate(String),
+
+    #[error("nota: {0}")]
+    Nota(#[from] nota_codec::Error),
+
+    #[error("inline Nota argument must be UTF-8: {got}")]
+    InvalidInlineNotaArgument { got: String },
 }
 
 impl From<String> for Error {

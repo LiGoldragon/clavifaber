@@ -1,10 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use clavifaber::error::{Error, Result};
-use clavifaber::identity::{IdentityDirectory, NodeIdentity};
-use clavifaber::ssh_key::OpenSshPublicKey;
-use clavifaber::{gpg_agent, x509};
-use std::fs;
-use std::path::PathBuf;
+use clavifaber::request::{
+    CertificateAuthorityInitialization, CertificateVerification, ClaviFaberRequest,
+    ClaviFaberResponse, CommandLine, IdentityDirectoryInitialization, NodeCertificateCreation,
+    PublicKeyDerivation, ServerCertificateCreation,
+};
 
 #[derive(Parser)]
 #[command(
@@ -18,46 +18,46 @@ struct Cli {
 
 impl Cli {
     fn run(self) -> Result<()> {
-        self.command.run()
+        self.command.compatibility_command().run()
     }
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Create a self-signed CA certificate from a GPG Ed25519 key
-    CaInit(CertificateAuthorityInitialization),
+    CaInit(CertificateAuthorityInitializationArguments),
 
     /// Generate a P-256 server keypair + certificate signed by the CA
-    ServerCert(ServerCertificateRequest),
+    ServerCert(ServerCertificateCreationArguments),
 
     /// Create an X.509 client certificate for a node's Ed25519 SSH pubkey
-    NodeCert(NodeCertificateRequest),
+    NodeCert(NodeCertificateCreationArguments),
 
     /// Generate node identity complex (Ed25519 keypair) at first install
-    ComplexInit(IdentityDirectoryInitialization),
+    ComplexInit(IdentityDirectoryInitializationArguments),
 
     /// Re-derive ssh.pub from the private key (run on every boot)
-    DerivePubkey(PublicKeyDerivation),
+    DerivePubkey(PublicKeyDerivationArguments),
 
     /// Verify a certificate chains to the CA
-    Verify(CertificateVerification),
+    Verify(CertificateVerificationArguments),
 }
 
 impl Commands {
-    fn run(self) -> Result<()> {
+    fn compatibility_command(self) -> CompatibilityCommand {
         match self {
-            Self::CaInit(command) => command.run(),
-            Self::ServerCert(command) => command.run(),
-            Self::NodeCert(command) => command.run(),
-            Self::ComplexInit(command) => command.run(),
-            Self::DerivePubkey(command) => command.run(),
-            Self::Verify(command) => command.run(),
+            Self::CaInit(arguments) => arguments.compatibility_command(),
+            Self::ServerCert(arguments) => arguments.compatibility_command(),
+            Self::NodeCert(arguments) => arguments.compatibility_command(),
+            Self::ComplexInit(arguments) => arguments.compatibility_command(),
+            Self::DerivePubkey(arguments) => arguments.compatibility_command(),
+            Self::Verify(arguments) => arguments.compatibility_command(),
         }
     }
 }
 
 #[derive(Args)]
-struct CertificateAuthorityInitialization {
+struct CertificateAuthorityInitializationArguments {
     #[arg(long)]
     keygrip: String,
 
@@ -65,95 +65,64 @@ struct CertificateAuthorityInitialization {
     common_name: String,
 
     #[arg(long = "out")]
-    output: PathBuf,
+    output: String,
 }
 
-impl CertificateAuthorityInitialization {
-    fn run(self) -> Result<()> {
-        eprintln!("Creating CA certificate: CN={}", self.common_name);
-
-        let public_key_bytes = export_ed25519_public_key_from_keygrip(&self.keygrip)?;
-
-        let subject_public_key_info = spki::SubjectPublicKeyInfoOwned {
-            algorithm: spki::AlgorithmIdentifierOwned {
-                oid: der::asn1::ObjectIdentifier::new_unwrap("1.3.101.112"),
-                parameters: None,
-            },
-            subject_public_key: der::asn1::BitString::from_bytes(&public_key_bytes)
-                .map_err(|error| Error::Certificate(format!("BitString: {error}")))?,
-        };
-
-        let certificate_der =
-            x509::create_ca_cert(&self.keygrip, &self.common_name, subject_public_key_info)?;
-        let certificate_pem = x509::cert_to_pem(&certificate_der)?;
-
-        fs::write(&self.output, &certificate_pem).map_err(|source| Error::Io {
-            path: self.output.clone(),
-            source,
-        })?;
-        eprintln!("CA certificate written to {}", self.output.display());
-        Ok(())
+impl CertificateAuthorityInitializationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::CertificateAuthorityInitialization(
+                CertificateAuthorityInitialization {
+                    keygrip: self.keygrip,
+                    common_name: self.common_name,
+                    output: self.output,
+                },
+            ),
+            mode: CompatibilityMode::CertificateAuthority,
+        }
     }
 }
 
 #[derive(Args)]
-struct ServerCertificateRequest {
+struct ServerCertificateCreationArguments {
     #[arg(long = "ca-keygrip")]
     certificate_authority_keygrip: String,
 
     #[arg(long = "ca-cert")]
-    certificate_authority_certificate: PathBuf,
+    certificate_authority_certificate: String,
 
     #[arg(long = "cn")]
     common_name: String,
 
     #[arg(long = "out-cert")]
-    output_certificate: PathBuf,
+    output_certificate: String,
 
     #[arg(long = "out-key")]
-    output_private_key: PathBuf,
+    output_private_key: String,
 }
 
-impl ServerCertificateRequest {
-    fn run(self) -> Result<()> {
-        eprintln!("Creating server certificate: CN={}", self.common_name);
-
-        let certificate_authority_pem = fs::read_to_string(&self.certificate_authority_certificate)
-            .map_err(|source| Error::Io {
-                path: self.certificate_authority_certificate.clone(),
-                source,
-            })?;
-        let certificate_authority_der = x509::pem_to_cert_der(&certificate_authority_pem)?;
-
-        let (certificate_der, private_key_pem) = x509::create_server_cert(
-            &self.certificate_authority_keygrip,
-            &certificate_authority_der,
-            &self.common_name,
-        )?;
-        let certificate_pem = x509::cert_to_pem(&certificate_der)?;
-
-        fs::write(&self.output_certificate, &certificate_pem).map_err(|source| Error::Io {
-            path: self.output_certificate.clone(),
-            source,
-        })?;
-        fs::write(&self.output_private_key, &private_key_pem).map_err(|source| Error::Io {
-            path: self.output_private_key.clone(),
-            source,
-        })?;
-
-        eprintln!("Server certificate: {}", self.output_certificate.display());
-        eprintln!("Server private key: {}", self.output_private_key.display());
-        Ok(())
+impl ServerCertificateCreationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::ServerCertificateCreation(ServerCertificateCreation {
+                certificate_authority_keygrip: self.certificate_authority_keygrip,
+                certificate_authority_certificate: self.certificate_authority_certificate,
+                common_name: self.common_name,
+                output_certificate: self.output_certificate,
+                output_private_key: self.output_private_key,
+            }),
+            mode: CompatibilityMode::ServerCertificate,
+        }
     }
 }
 
 #[derive(Args)]
-struct NodeCertificateRequest {
+struct NodeCertificateCreationArguments {
     #[arg(long = "ca-keygrip")]
     certificate_authority_keygrip: String,
 
     #[arg(long = "ca-cert")]
-    certificate_authority_certificate: PathBuf,
+    certificate_authority_certificate: String,
 
     #[arg(long = "ssh-pubkey")]
     open_ssh_public_key: String,
@@ -162,143 +131,160 @@ struct NodeCertificateRequest {
     common_name: String,
 
     #[arg(long = "out")]
-    output: PathBuf,
+    output: String,
 }
 
-impl NodeCertificateRequest {
-    fn run(self) -> Result<()> {
-        eprintln!("Creating node certificate: CN={}", self.common_name);
-
-        let certificate_authority_pem = fs::read_to_string(&self.certificate_authority_certificate)
-            .map_err(|source| Error::Io {
-                path: self.certificate_authority_certificate.clone(),
-                source,
-            })?;
-        let certificate_authority_der = x509::pem_to_cert_der(&certificate_authority_pem)?;
-
-        let subject_public_key_info =
-            OpenSshPublicKey::from_text(self.open_ssh_public_key)?.subject_public_key_info()?;
-        let certificate_der = x509::create_node_cert(
-            &self.certificate_authority_keygrip,
-            &certificate_authority_der,
-            subject_public_key_info,
-            &self.common_name,
-        )?;
-        let certificate_pem = x509::cert_to_pem(&certificate_der)?;
-
-        fs::write(&self.output, &certificate_pem).map_err(|source| Error::Io {
-            path: self.output.clone(),
-            source,
-        })?;
-        eprintln!("Node certificate written to {}", self.output.display());
-        Ok(())
-    }
-}
-
-#[derive(Args)]
-struct IdentityDirectoryInitialization {
-    #[arg(long = "dir")]
-    directory: PathBuf,
-}
-
-impl IdentityDirectoryInitialization {
-    fn run(self) -> Result<()> {
-        let identity_directory = IdentityDirectory::from_path(self.directory.clone());
-        match identity_directory.existing_identity()? {
-            Some(existing_identity) => {
-                let open_ssh_public_key = existing_identity.open_ssh_public_key();
-                eprintln!(
-                    "identity directory already exists at {}",
-                    self.directory.display()
-                );
-                println!("{open_ssh_public_key}");
-            }
-            None => {
-                eprintln!(
-                    "Generating node identity directory at {}",
-                    self.directory.display()
-                );
-                let identity = NodeIdentity::generate();
-                identity_directory.write_identity(&identity)?;
-                let open_ssh_public_key = identity.open_ssh_public_key();
-                eprintln!("Identity generated. SSH public key:");
-                println!("{open_ssh_public_key}");
-            }
+impl NodeCertificateCreationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::NodeCertificateCreation(NodeCertificateCreation {
+                certificate_authority_keygrip: self.certificate_authority_keygrip,
+                certificate_authority_certificate: self.certificate_authority_certificate,
+                open_ssh_public_key: self.open_ssh_public_key,
+                common_name: self.common_name,
+                output: self.output,
+            }),
+            mode: CompatibilityMode::NodeCertificate,
         }
-        Ok(())
     }
 }
 
 #[derive(Args)]
-struct PublicKeyDerivation {
+struct IdentityDirectoryInitializationArguments {
     #[arg(long = "dir")]
-    directory: PathBuf,
+    directory: String,
 }
 
-impl PublicKeyDerivation {
-    fn run(self) -> Result<()> {
-        let identity_directory = IdentityDirectory::from_path(self.directory);
-        let identity = identity_directory.load_identity()?;
-        let open_ssh_public_key = identity.open_ssh_public_key();
-        identity_directory.write_public_key(&identity)?;
-        println!("{open_ssh_public_key}");
-        Ok(())
+impl IdentityDirectoryInitializationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::IdentityDirectoryInitialization(
+                IdentityDirectoryInitialization {
+                    directory: self.directory,
+                },
+            ),
+            mode: CompatibilityMode::PublicKeyProjection,
+        }
     }
 }
 
 #[derive(Args)]
-struct CertificateVerification {
+struct PublicKeyDerivationArguments {
+    #[arg(long = "dir")]
+    directory: String,
+}
+
+impl PublicKeyDerivationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::PublicKeyDerivation(PublicKeyDerivation {
+                directory: self.directory,
+            }),
+            mode: CompatibilityMode::PublicKeyProjection,
+        }
+    }
+}
+
+#[derive(Args)]
+struct CertificateVerificationArguments {
     #[arg(long = "ca-cert")]
-    certificate_authority_certificate: PathBuf,
+    certificate_authority_certificate: String,
 
     #[arg(long = "cert")]
-    certificate: PathBuf,
+    certificate: String,
 }
 
-impl CertificateVerification {
+impl CertificateVerificationArguments {
+    fn compatibility_command(self) -> CompatibilityCommand {
+        CompatibilityCommand {
+            request: ClaviFaberRequest::CertificateVerification(CertificateVerification {
+                certificate_authority_certificate: self.certificate_authority_certificate,
+                certificate: self.certificate,
+            }),
+            mode: CompatibilityMode::CertificateVerification,
+        }
+    }
+}
+
+struct CompatibilityCommand {
+    request: ClaviFaberRequest,
+    mode: CompatibilityMode,
+}
+
+impl CompatibilityCommand {
     fn run(self) -> Result<()> {
-        let certificate_authority_pem = fs::read_to_string(&self.certificate_authority_certificate)
-            .map_err(|source| Error::Io {
-                path: self.certificate_authority_certificate.clone(),
-                source,
-            })?;
-        let certificate_pem =
-            fs::read_to_string(&self.certificate).map_err(|source| Error::Io {
-                path: self.certificate.clone(),
-                source,
-            })?;
+        let response = self.request.execute()?;
+        self.mode.print(response)
+    }
+}
 
-        let certificate_authority_der = x509::pem_to_cert_der(&certificate_authority_pem)?;
-        let certificate_der = x509::pem_to_cert_der(&certificate_pem)?;
+enum CompatibilityMode {
+    CertificateAuthority,
+    ServerCertificate,
+    NodeCertificate,
+    PublicKeyProjection,
+    CertificateVerification,
+}
 
-        x509::verify_cert_chain(&certificate_authority_der, &certificate_der)?;
-        eprintln!("OK: certificate chains to CA");
-        Ok(())
+impl CompatibilityMode {
+    fn print(self, response: ClaviFaberResponse) -> Result<()> {
+        match (self, response) {
+            (
+                Self::CertificateAuthority,
+                ClaviFaberResponse::CertificateAuthorityCertificateWritten(written),
+            ) => {
+                eprintln!("CA certificate written to {}", written.output);
+                Ok(())
+            }
+            (Self::ServerCertificate, ClaviFaberResponse::ServerCertificateWritten(written)) => {
+                eprintln!("Server certificate: {}", written.certificate);
+                eprintln!("Server private key: {}", written.private_key);
+                Ok(())
+            }
+            (Self::NodeCertificate, ClaviFaberResponse::NodeCertificateWritten(written)) => {
+                eprintln!("Node certificate written to {}", written.output);
+                Ok(())
+            }
+            (Self::PublicKeyProjection, ClaviFaberResponse::PublicKeyProjection(projection)) => {
+                println!("{}", projection.open_ssh_public_key);
+                Ok(())
+            }
+            (Self::CertificateVerification, ClaviFaberResponse::CertificateChainVerified(_)) => {
+                eprintln!("OK: certificate chains to CA");
+                Ok(())
+            }
+            (_, unexpected) => Err(Error::Parse(format!(
+                "unexpected response for compatibility command: {unexpected:?}"
+            ))),
+        }
+    }
+}
+
+struct Process {
+    command_line: CommandLine,
+}
+
+impl Process {
+    fn from_env() -> Self {
+        Self {
+            command_line: CommandLine::from_env(),
+        }
+    }
+
+    fn run(self) -> Result<()> {
+        if let Some(request) = self.command_line.inline_request()? {
+            let response = request.execute()?;
+            println!("{}", response.to_nota()?);
+            return Ok(());
+        }
+
+        Cli::parse().run()
     }
 }
 
 fn main() {
-    if let Err(error) = Cli::parse().run() {
+    if let Err(error) = Process::from_env().run() {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
-}
-
-/// Extract Ed25519 public key bytes from GPG via keygrip.
-/// Tries `gpg --export-ssh-key` first, falls back to READKEY via agent.
-fn export_ed25519_public_key_from_keygrip(keygrip: &str) -> Result<Vec<u8>> {
-    let output = std::process::Command::new("gpg")
-        .args(["--batch", "--export-ssh-key", &format!("{keygrip}!")])
-        .output()
-        .map_err(|error| Error::Gpg(format!("gpg --export-ssh-key: {error}")))?;
-
-    if output.status.success() {
-        let open_ssh_public_key_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !open_ssh_public_key_text.is_empty() {
-            return OpenSshPublicKey::from_text(open_ssh_public_key_text)?.raw_key_bytes();
-        }
-    }
-
-    let mut agent = gpg_agent::GpgAgent::connect()?;
-    agent.readkey(keygrip)
 }

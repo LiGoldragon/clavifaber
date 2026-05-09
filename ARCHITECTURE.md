@@ -27,9 +27,9 @@ CriomOS WiFi PKI path. The intended cluster bundle also includes Yggdrasil
 identity material and any WiFi client certificate public metadata needed by the
 cluster database.
 
-This plane should produce typed records. Consumers must not poll arbitrary files
-looking for key changes; producers push a complete current public projection
-when material is created or repaired.
+This plane produces `PublicKeyPublication` records. Consumers must not poll
+arbitrary files looking for key changes; producers push a complete current
+public projection when material is created or repaired.
 
 ### Certificate Authority
 
@@ -41,23 +41,36 @@ certificates. It currently supports:
 - a node certificate from an Ed25519 OpenSSH public key,
 - issuer and signature verification against the CA certificate.
 
-This code path is functional but still older than the repo discipline. New work
-should move certificate operations behind data-bearing request/issuer types and
-avoid adding new public free functions.
+Certificate operations live behind data-bearing issuer/request/result types in
+`src/x509.rs`. The compatibility CLI and the Nota request surface both use the
+same request execution path.
 
 ### Publication
 
-The publication plane is still design work. ClaviFaber should emit a typed
-public-key publication record for the component that owns the CriomOS cluster
-database. It should not learn ad hoc paths into unrelated repositories and
-should not mutate cluster state through string patches.
+The publication plane emits a typed public-key publication record for the
+component that owns the CriomOS cluster database. ClaviFaber does not mutate
+cluster state directly and does not learn ad hoc paths into unrelated
+repositories.
+
+The cluster database writer belongs in the cluster-management/deployment layer
+that already owns the database revision and deployment transaction. In the
+current workspace shape, that means a Lojix/CriomOS cluster publisher or a
+dedicated successor component, not ClaviFaber. ClaviFaber's contract ends at a
+complete public `PublicKeyPublication` record.
 
 ## Command Surface
 
 The current Clap command line exists for compatibility with the extracted
-prototype. The target operator surface is a single Nota request argument with
-typed request and result records. No new flag/subcommand surface should be added
+prototype. The operator surface is a single Nota request argument with typed
+request and result records. No new flag/subcommand surface should be added
 unless it is explicitly a temporary compatibility bridge.
+
+Example:
+
+```sh
+clavifaber '(IdentityDirectoryInitialization "/var/lib/clavifaber")'
+clavifaber '(PublicKeyPublicationRequest probus "/var/lib/clavifaber" None None None)'
+```
 
 ## Test Contract
 
@@ -69,4 +82,5 @@ nix run .#test-pki-lifecycle
 ```
 
 Tests should be named by their behavioral premise and should use fixture nouns
-instead of inline command plumbing.
+instead of inline command plumbing. `tests/request_surface.rs` covers the Nota
+request/response surface and the public publication record.
