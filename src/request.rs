@@ -7,6 +7,10 @@ use crate::actors::publication_collector::CollectPublication;
 use crate::actors::runtime_root::RuntimeRoot;
 use crate::actors::ssh_host_key::WritePublicKeyProjection;
 use crate::actors::translate_send_error;
+use crate::actors::wifi_certificate::{
+    EnsureWifiClientCertificate, EnsureWifiServerCertificate, WifiClientCertificatePlan,
+    WifiServerCertificatePlan,
+};
 use crate::error::{Error, Result};
 use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest, yggdrasil_projection};
 use crate::ssh_key::OpenSshPublicKey;
@@ -406,10 +410,34 @@ impl Converge {
             converge_certificate_authority(&runtime, plan).await?;
         }
         if let Some(plan) = &self.server_certificate {
-            converge_server_certificate(&runtime, plan).await?;
+            runtime
+                .wifi_certificate
+                .ask(EnsureWifiServerCertificate {
+                    plan: WifiServerCertificatePlan {
+                        keygrip: plan.keygrip.clone(),
+                        certificate_authority: PathBuf::from(&plan.certificate_authority),
+                        common_name: plan.common_name.clone(),
+                        output_certificate: PathBuf::from(&plan.output_certificate),
+                        output_private_key: PathBuf::from(&plan.output_private_key),
+                    },
+                })
+                .await
+                .map_err(translate_send_error)?;
         }
         for plan in &self.node_certificates {
-            converge_node_certificate(&runtime, plan).await?;
+            runtime
+                .wifi_certificate
+                .ask(EnsureWifiClientCertificate {
+                    plan: WifiClientCertificatePlan {
+                        keygrip: plan.keygrip.clone(),
+                        certificate_authority: PathBuf::from(&plan.certificate_authority),
+                        open_ssh_public_key: plan.open_ssh_public_key.clone(),
+                        common_name: plan.common_name.clone(),
+                        output: PathBuf::from(&plan.output),
+                    },
+                })
+                .await
+                .map_err(translate_send_error)?;
         }
         let yggdrasil = match &self.yggdrasil {
             Some(plan) => Some(yggdrasil_projection(&runtime, plan.clone()).await?),
@@ -464,51 +492,6 @@ async fn converge_certificate_authority(
         .ask(IssueCertificateAuthority {
             keygrip: plan.keygrip.clone(),
             request: CertificateAuthorityCertificateRequest::new(
-                plan.common_name.clone(),
-                subject_public_key_info,
-            ),
-        })
-        .await
-        .map_err(translate_send_error)?;
-    TextFile::from_path(&plan.output).write_public(&certificate.to_pem()?)
-}
-
-async fn converge_server_certificate(
-    runtime: &RuntimeRoot,
-    plan: &ServerCertificatePlan,
-) -> Result<()> {
-    let certificate_authority =
-        TextFile::from_path(&plan.certificate_authority).read_certificate()?;
-    let server_certificate = runtime
-        .certificate_issuer
-        .ask(IssueServerCertificate {
-            keygrip: plan.keygrip.clone(),
-            certificate_authority,
-            request: ServerCertificateSigningRequest::new(plan.common_name.clone()),
-        })
-        .await
-        .map_err(translate_send_error)?;
-    ServerCertificateFiles {
-        certificate: TextFile::from_path(&plan.output_certificate),
-        private_key: TextFile::from_path(&plan.output_private_key),
-    }
-    .write(&server_certificate)
-}
-
-async fn converge_node_certificate(
-    runtime: &RuntimeRoot,
-    plan: &NodeCertificatePlan,
-) -> Result<()> {
-    let certificate_authority =
-        TextFile::from_path(&plan.certificate_authority).read_certificate()?;
-    let subject_public_key_info =
-        OpenSshPublicKey::from_text(plan.open_ssh_public_key.clone())?.subject_public_key_info()?;
-    let certificate = runtime
-        .certificate_issuer
-        .ask(IssueNodeCertificate {
-            keygrip: plan.keygrip.clone(),
-            certificate_authority,
-            request: NodeCertificateSigningRequest::new(
                 plan.common_name.clone(),
                 subject_public_key_info,
             ),

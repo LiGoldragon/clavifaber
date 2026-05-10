@@ -5,6 +5,7 @@ pub mod publication_collector;
 pub mod runtime_root;
 pub mod ssh_host_key;
 pub mod trace_recorder;
+pub mod wifi_certificate;
 pub mod yggdrasil_key;
 
 use crate::error::Error;
