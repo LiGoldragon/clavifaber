@@ -177,12 +177,13 @@ CONVERGE_CA="$TEST_DIRECTORY/converge-ca.pem"
 CONVERGE_SERVER_CERT="$TEST_DIRECTORY/converge-server.pem"
 CONVERGE_SERVER_KEY="$TEST_DIRECTORY/converge-server.key"
 CONVERGE_NODE_CERT="$TEST_DIRECTORY/converge-node.pem"
+CONVERGE_YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/converge-yggdrasil/keypair.json"
 
 "${CLAVIFABER[@]}" complex-init --dir "$CONVERGE_DIRECTORY" >/dev/null
 CONVERGE_NODE_SSH_PUBLIC_KEY=$(cat "$CONVERGE_DIRECTORY/ssh.pub")
 
 CONVERGE_PLAN=$(cat <<EOF
-(Converge "$CONVERGE_DIRECTORY" probus "$CONVERGE_PUBLICATION" None None None "$CONVERGE_STATE" (CertificateAuthorityPlan "$KEYGRIP" "Aedifico Converge CA" "$CONVERGE_CA") (ServerCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "faber.converge.criome" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY") [(NodeCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "$CONVERGE_NODE_SSH_PUBLIC_KEY" "probus@converge" "$CONVERGE_NODE_CERT")])
+(Converge "$CONVERGE_DIRECTORY" probus "$CONVERGE_PUBLICATION" (YggdrasilPlan "$CONVERGE_YGGDRASIL_KEYPAIR") None "$CONVERGE_STATE" (CertificateAuthorityPlan "$KEYGRIP" "Aedifico Converge CA" "$CONVERGE_CA") (ServerCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "faber.converge.criome" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY") [(NodeCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "$CONVERGE_NODE_SSH_PUBLIC_KEY" "probus@converge" "$CONVERGE_NODE_CERT")])
 EOF
 )
 
@@ -194,12 +195,32 @@ if ! echo "$CONVERGE_FIRST_REPLY" | grep -q 'true'; then
   exit 1
 fi
 
-for required in "$CONVERGE_PUBLICATION" "$CONVERGE_STATE" "$CONVERGE_CA" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY" "$CONVERGE_NODE_CERT"; do
+for required in "$CONVERGE_PUBLICATION" "$CONVERGE_STATE" "$CONVERGE_CA" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY" "$CONVERGE_NODE_CERT" "$CONVERGE_YGGDRASIL_KEYPAIR"; do
   if [ ! -s "$required" ]; then
     echo "FAIL: converge did not produce $required"
     exit 1
   fi
 done
+
+YGGDRASIL_KEYPAIR_MODE=$(stat -c %a "$CONVERGE_YGGDRASIL_KEYPAIR")
+if [ "$YGGDRASIL_KEYPAIR_MODE" != "600" ]; then
+  echo "FAIL: yggdrasil keypair file mode is $YGGDRASIL_KEYPAIR_MODE, expected 600"
+  exit 1
+fi
+echo "    yggdrasil keypair file mode 0600: OK"
+
+if ! grep -q '"PrivateKey"' "$CONVERGE_YGGDRASIL_KEYPAIR"; then
+  echo "FAIL: yggdrasil keypair file missing PrivateKey field"
+  cat "$CONVERGE_YGGDRASIL_KEYPAIR"
+  exit 1
+fi
+
+if ! grep -qE '[0-9a-f]{64}' "$CONVERGE_PUBLICATION"; then
+  echo "FAIL: publication.nota missing yggdrasil public key (64-hex)"
+  cat "$CONVERGE_PUBLICATION"
+  exit 1
+fi
+echo "    publication carries yggdrasil hex public key: OK"
 
 "${CLAVIFABER[@]}" verify --ca-cert "$CONVERGE_CA" --cert "$CONVERGE_SERVER_CERT" >/dev/null
 echo "    converged server cert verifies against converged CA: OK"
@@ -214,6 +235,15 @@ if ! echo "$CONVERGE_SECOND_REPLY" | grep -q 'false'; then
   exit 1
 fi
 echo "    gate skipped on identical input: OK"
+
+YGGDRASIL_KEYPAIR_BEFORE=$(cat "$CONVERGE_YGGDRASIL_KEYPAIR")
+"${CLAVIFABER[@]}" "$CONVERGE_PLAN" >/dev/null
+YGGDRASIL_KEYPAIR_AFTER=$(cat "$CONVERGE_YGGDRASIL_KEYPAIR")
+if [ "$YGGDRASIL_KEYPAIR_BEFORE" != "$YGGDRASIL_KEYPAIR_AFTER" ]; then
+  echo "FAIL: yggdrasil keypair rotated under re-converge (must stay stable)"
+  exit 1
+fi
+echo "    yggdrasil keypair stable across re-converge: OK"
 
 echo ""
 echo "=== ALL TESTS PASSED ==="
