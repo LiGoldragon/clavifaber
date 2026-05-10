@@ -1,6 +1,5 @@
 use crate::actors::certificate_issuer::CertificateIssuer;
 use crate::actors::gpg_agent_session::GpgAgentSession;
-use crate::actors::host_identity::HostIdentity;
 use crate::actors::trace_recorder::TraceRecorder;
 use crate::actors::yggdrasil_key::YggdrasilKey;
 use kameo::Actor;
@@ -8,7 +7,6 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::error::Infallible;
 
 pub struct RuntimeRoot {
-    pub host_identity: ActorRef<HostIdentity>,
     pub gpg_agent_session: ActorRef<GpgAgentSession>,
     pub certificate_issuer: ActorRef<CertificateIssuer>,
     pub yggdrasil_key: ActorRef<YggdrasilKey>,
@@ -17,7 +15,6 @@ pub struct RuntimeRoot {
 
 impl RuntimeRoot {
     pub fn start(tracer: Option<ActorRef<TraceRecorder>>) -> Self {
-        let host_identity = HostIdentity::spawn(HostIdentity::new(tracer.clone()));
         let gpg_agent_session = GpgAgentSession::spawn(GpgAgentSession::new(tracer.clone()));
         let certificate_issuer = CertificateIssuer::spawn(CertificateIssuer::new(
             gpg_agent_session.clone(),
@@ -25,7 +22,6 @@ impl RuntimeRoot {
         ));
         let yggdrasil_key = YggdrasilKey::spawn(YggdrasilKey::new(tracer.clone()));
         Self {
-            host_identity,
             gpg_agent_session,
             certificate_issuer,
             yggdrasil_key,

@@ -1,6 +1,5 @@
 pub mod certificate_issuer;
 pub mod gpg_agent_session;
-pub mod host_identity;
 pub mod runtime_root;
 pub mod trace_recorder;
 pub mod yggdrasil_key;

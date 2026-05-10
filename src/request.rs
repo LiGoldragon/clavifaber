@@ -2,7 +2,6 @@ use crate::actors::certificate_issuer::{
     IssueCertificateAuthority, IssueNodeCertificate, IssueServerCertificate, VerifyCertificateChain,
 };
 use crate::actors::gpg_agent_session::ReadEd25519PublicKey;
-use crate::actors::host_identity::{EnsureIdentity, LoadIdentity, WritePublicKeyProjection};
 use crate::actors::runtime_root::RuntimeRoot;
 use crate::actors::translate_send_error;
 use crate::actors::yggdrasil_key::{EnsureYggdrasilIdentity, ReadYggdrasilProjection};
@@ -21,8 +20,6 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
 pub enum ClaviFaberRequest {
-    IdentitySetup(IdentitySetup),
-    OpenSshPublicKeyDerivation(OpenSshPublicKeyDerivation),
     CertificateAuthorityIssuance(CertificateAuthorityIssuance),
     ServerCertificateIssuance(ServerCertificateIssuance),
     ClientCertificateIssuance(ClientCertificateIssuance),
@@ -53,8 +50,6 @@ impl ClaviFaberRequest {
 
     pub async fn execute(self) -> Result<ClaviFaberResponse> {
         match self {
-            Self::IdentitySetup(request) => request.execute().await,
-            Self::OpenSshPublicKeyDerivation(request) => request.execute().await,
             Self::CertificateAuthorityIssuance(request) => request.execute().await,
             Self::ServerCertificateIssuance(request) => request.execute().await,
             Self::ClientCertificateIssuance(request) => request.execute().await,
@@ -67,8 +62,6 @@ impl ClaviFaberRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
 pub enum ClaviFaberResponse {
-    IdentitySet(IdentitySet),
-    OpenSshPublicKeyDerived(OpenSshPublicKeyDerived),
     CertificateAuthorityCertificateWritten(CertificateAuthorityCertificateWritten),
     ServerCertificateWritten(ServerCertificateWritten),
     ClientCertificateWritten(ClientCertificateWritten),
@@ -99,82 +92,9 @@ impl ClaviFaberResponse {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//  IdentitySetup — ensure host SSH ed25519 identity exists on disk.
-// ───────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct IdentitySetup {
-    pub directory: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct IdentitySet {
-    pub directory: String,
-    pub open_ssh_public_key: String,
-}
-
-impl IdentitySetup {
-    async fn execute(self) -> Result<ClaviFaberResponse> {
-        let runtime = RuntimeRoot::start(None);
-        let directory = PathBuf::from(&self.directory);
-        let identity = runtime
-            .host_identity
-            .ask(EnsureIdentity {
-                directory: directory.clone(),
-            })
-            .await
-            .map_err(translate_send_error)?;
-        Ok(ClaviFaberResponse::IdentitySet(IdentitySet {
-            directory: self.directory,
-            open_ssh_public_key: identity.open_ssh_public_key(),
-        }))
-    }
-}
-
-// ───────────────────────────────────────────────────────────────────
-//  OpenSshPublicKeyDerivation — re-derive ssh.pub from the private key.
-// ───────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct OpenSshPublicKeyDerivation {
-    pub directory: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct OpenSshPublicKeyDerived {
-    pub open_ssh_public_key: String,
-}
-
-impl OpenSshPublicKeyDerivation {
-    async fn execute(self) -> Result<ClaviFaberResponse> {
-        let runtime = RuntimeRoot::start(None);
-        let directory = PathBuf::from(&self.directory);
-        let identity = runtime
-            .host_identity
-            .ask(LoadIdentity {
-                directory: directory.clone(),
-            })
-            .await
-            .map_err(translate_send_error)?;
-        let projection = runtime
-            .host_identity
-            .ask(WritePublicKeyProjection {
-                directory,
-                identity,
-            })
-            .await
-            .map_err(translate_send_error)?;
-        Ok(ClaviFaberResponse::OpenSshPublicKeyDerived(
-            OpenSshPublicKeyDerived {
-                open_ssh_public_key: projection.open_ssh_public_key,
-            },
-        ))
-    }
-}
-
-// ───────────────────────────────────────────────────────────────────
 //  CertificateAuthorityIssuance — sign a CA cert against a GPG keygrip.
-//  Idempotent: if `output` exists and is a parseable cert, skip.
+//  Idempotent: skip when the output file parses as a PEM certificate;
+//  fail loudly when it exists but is unparseable.
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -240,7 +160,8 @@ impl CertificateAuthorityIssuance {
 
 // ───────────────────────────────────────────────────────────────────
 //  ServerCertificateIssuance — sign a P-256 server cert from the CA.
-//  Idempotent: skip when both output files already exist.
+//  Skip when both output files parse. Fail loudly on unparseable or
+//  half-existence (would silently rotate the EC keypair).
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -275,9 +196,6 @@ impl ServerCertificateIssuance {
                 ));
             }
             (ExistingCertificateFile::Absent, ExistingPrivateKeyFile::Absent) => {}
-            // Order matters: an unparseable existing file is a more
-            // specific symptom than half-existence. Diagnose it
-            // first so the operator gets the right reason.
             (ExistingCertificateFile::Unparseable(detail), _) => {
                 return Err(Error::Certificate(format!(
                     "{} exists but is not a parseable certificate ({detail}); refusing to silently overwrite — delete BOTH cert and key files to force re-issue",
@@ -290,11 +208,6 @@ impl ServerCertificateIssuance {
                     private_key_path.display()
                 )));
             }
-            // Half-existence: refuse to re-issue. A fresh server cert
-            // mints a fresh EC private key; if the operator deleted
-            // one file but not the other, re-issuing silently rotates
-            // the EC keypair (anyone who trusted the old public key
-            // breaks). Surface and let the operator decide.
             (ExistingCertificateFile::Valid, _) | (_, ExistingPrivateKeyFile::Valid) => {
                 return Err(Error::Certificate(format!(
                     "{} and {} half-exist; refusing to re-issue (would lose the surviving file's keypair). Delete BOTH files to force re-issue, or restore the missing one from backup",
@@ -326,8 +239,9 @@ impl ServerCertificateIssuance {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//  ClientCertificateIssuance — sign a per-host client cert from the CA.
-//  Idempotent: skip when output file already exists.
+//  ClientCertificateIssuance — sign a per-host client cert from the
+//  cluster CA against the host's OpenSSH ed25519 public key.
+//  Idempotent: skip when the output parses; fail loudly otherwise.
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -390,7 +304,7 @@ impl ClientCertificateIssuance {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//  CertificateChainVerification — issuer + signature + validity-window check.
+//  CertificateChainVerification — issuer + signature + validity-window.
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -427,8 +341,8 @@ impl CertificateChainVerification {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//  YggdrasilKeypairSetup — generate the per-host yggdrasil keypair file.
-//  Idempotent: handled inside YggdrasilKey actor.
+//  YggdrasilKeypairSetup — generate the per-host yggdrasil keypair
+//  file. Idempotent: YggdrasilKey actor skips if the file exists.
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -469,16 +383,25 @@ impl YggdrasilKeypairSetup {
 
 // ───────────────────────────────────────────────────────────────────
 //  PublicKeyPublicationWriting — assemble and atomically write
-//  publication.nota with typed identity / yggdrasil / wifi-cert fields.
+//  publication.nota with typed open-ssh-pubkey / yggdrasil / wifi-cert
+//  fields. clavifaber does NOT own the SSH host key — sshd does — so
+//  the caller hands clavifaber a path to the existing
+//  /etc/ssh/ssh_host_ed25519_key.pub (or wherever the operator
+//  configures it).
 // ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
 pub struct PublicKeyPublicationWriting {
     pub node_name: String,
-    pub identity_directory: String,
+    pub open_ssh_public_key: OpenSshPublicKeyLocation,
     pub yggdrasil_keypair: Option<YggdrasilKeypairLocation>,
     pub wifi_client_certificate: Option<WifiClientCertificateLocation>,
     pub publication_output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct OpenSshPublicKeyLocation {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
@@ -499,14 +422,8 @@ pub struct PublicKeyPublicationWritten {
 impl PublicKeyPublicationWriting {
     async fn execute(self) -> Result<ClaviFaberResponse> {
         let runtime = RuntimeRoot::start(None);
-        let identity_directory = PathBuf::from(&self.identity_directory);
-        let identity = runtime
-            .host_identity
-            .ask(LoadIdentity {
-                directory: identity_directory,
-            })
-            .await
-            .map_err(translate_send_error)?;
+        let open_ssh_public_key =
+            read_open_ssh_public_key(Path::new(&self.open_ssh_public_key.path))?;
         let yggdrasil = match &self.yggdrasil_keypair {
             Some(location) => {
                 let keypair_path = PathBuf::from(&location.keypair_path);
@@ -535,7 +452,7 @@ impl PublicKeyPublicationWriting {
         };
         let publication = PublicKeyPublication {
             node_name: self.node_name,
-            open_ssh_public_key: identity.open_ssh_public_key(),
+            open_ssh_public_key,
             yggdrasil,
             wifi_client_certificate,
         };
@@ -553,7 +470,7 @@ impl PublicKeyPublicationWriting {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//  Helpers (keep them small; AtomicFile owns the write side).
+//  Helpers (small; AtomicFile owns the write side).
 // ───────────────────────────────────────────────────────────────────
 
 fn read_certificate(path: &Path) -> Result<CertificateDer> {
@@ -562,6 +479,30 @@ fn read_certificate(path: &Path) -> Result<CertificateDer> {
         source,
     })?;
     CertificateDer::from_pem(&pem)
+}
+
+/// Read an OpenSSH ed25519 public key from disk and return its text
+/// form (e.g. `ssh-ed25519 AAAA... comment`). The publication carries
+/// this verbatim so consumers compare apples-to-apples with what
+/// sshd presents on the wire.
+fn read_open_ssh_public_key(path: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let trimmed = raw.trim();
+    if !trimmed.starts_with("ssh-ed25519 ") {
+        return Err(Error::Parse(format!(
+            "{}: expected an ssh-ed25519 public key, got: {:?}",
+            path.display(),
+            trimmed.chars().take(40).collect::<String>()
+        )));
+    }
+    // Parse-validate via OpenSshPublicKey so a syntactically-wrong
+    // line on disk surfaces here instead of later inside the X.509
+    // cert path or downstream consumers.
+    let _ = SshKeyText::from_text(trimmed)?;
+    Ok(trimmed.to_owned())
 }
 
 /// Three-state classification of an on-disk certificate file: absent,
@@ -589,10 +530,7 @@ fn existing_certificate_file(path: &Path) -> Result<ExistingCertificateFile> {
 }
 
 /// Three-state classification of an on-disk private-key file: absent,
-/// looks-like-a-private-key-PEM, or present-but-not-PEM. The check is
-/// shallow (we only verify PEM shape, not algorithm) — enough to
-/// distinguish "operator put garbage here" from "the file is a real
-/// private key clavifaber should leave alone."
+/// looks-like-a-private-key-PEM, or present-but-not-PEM.
 enum ExistingPrivateKeyFile {
     Absent,
     Valid,

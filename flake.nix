@@ -38,7 +38,10 @@
           commonArgs = {
             inherit src;
             strictDeps = true;
-            nativeBuildInputs = [ pkgs.yggdrasil ];
+            nativeBuildInputs = [
+              pkgs.yggdrasil
+              pkgs.openssh
+            ];
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         in
@@ -73,6 +76,7 @@
               context.pkgs.coreutils
               context.pkgs.gnugrep
               context.pkgs.gnupg
+              context.pkgs.openssh
               context.pkgs.openssl
               context.pkgs.yggdrasil
             ];
@@ -86,6 +90,7 @@
               context.pkgs.coreutils
               context.pkgs.gnugrep
               context.pkgs.bubblewrap
+              context.pkgs.openssh
             ];
             text = ''
               exec bash ${./scripts/test-deployment-sandbox} ${clavifaber}/bin/clavifaber

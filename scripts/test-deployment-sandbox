@@ -13,17 +13,22 @@
 #
 # What the test does:
 #   1. Builds the clavifaber binary via nix.
-#   2. Sets up a host-visible state directory.
-#   3. Runs clavifaber in a bwrap sandbox with /nix/store bind-ro
-#      and the state directory bind-rw at /var/lib/clavifaber.
-#   4. Runs the same NOTA-only sequence CriomOS's complex-init
-#      systemd unit runs at boot (IdentitySetup +
-#      PublicKeyPublicationWriting).
-#   5. Verifies the host-visible state has the expected files,
-#      modes, and content.
+#   2. Generates an SSH host key on the host side (as sshd would on
+#      a real CriomOS first boot — clavifaber does NOT own the SSH
+#      host key any more; it consumes the one sshd creates).
+#   3. Sets up a host-visible state directory that the sandbox
+#      will mount at /var/lib/clavifaber.
+#   4. Runs clavifaber in a bwrap sandbox with /nix/store bind-ro,
+#      the SSH-host-key directory bind-ro, the state directory
+#      bind-rw.
+#   5. Runs the NOTA-only PublicKeyPublicationWriting sequence (the
+#      only step CriomOS's complex-init takes today now that
+#      clavifaber doesn't create host keys).
+#   6. Verifies the host-visible state has the expected publication.
 #
 # Requires:
 #   - bwrap (bubblewrap) — unprivileged
+#   - ssh-keygen (any openssh build)
 #   - nix
 #
 # Usage:
@@ -35,12 +40,14 @@ set -euo pipefail
 
 if ! command -v bwrap >/dev/null; then
   echo "FAIL: bwrap (bubblewrap) not on PATH" >&2
-  echo "      install via nix: nix profile install nixpkgs#bubblewrap" >&2
   exit 1
 fi
-
 if ! command -v nix >/dev/null; then
   echo "FAIL: nix not on PATH" >&2
+  exit 1
+fi
+if ! command -v ssh-keygen >/dev/null; then
+  echo "FAIL: ssh-keygen not on PATH" >&2
   exit 1
 fi
 
@@ -57,8 +64,14 @@ fi
 
 TEST_ROOT=$(mktemp -d /tmp/clavifaber-deployment-test.XXXXXX)
 STATE_DIR="$TEST_ROOT/state"
-mkdir -p "$STATE_DIR"
+SSH_DIR="$TEST_ROOT/ssh"
+mkdir -p "$STATE_DIR" "$SSH_DIR"
 chmod 755 "$STATE_DIR"
+
+# Fabricate the SSH host key that sshd would have produced on a real
+# CriomOS first boot. clavifaber will read the .pub file, never the
+# private key.
+ssh-keygen -t ed25519 -f "$SSH_DIR/ssh_host_ed25519_key" -N "" -C "sandbox-host" -q
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -66,32 +79,26 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== clavifaber deployment test (rootless container) ==="
-echo "    state dir:  $STATE_DIR"
-echo "    clavifaber: $CLAVIFABER_BIN_PATH"
+echo "    state dir:    $STATE_DIR"
+echo "    ssh-host dir: $SSH_DIR"
+echo "    clavifaber:   $CLAVIFABER_BIN_PATH"
 
 # bwrap arguments:
 #   --ro-bind /nix /nix     — clavifaber binary's closure is here, read-only
+#   --ro-bind ssh dir       — sshd's ssh_host_ed25519_key.pub
 #   --bind state /var/...   — clavifaber writes its state here, host-visible
 #   --proc /proc            — fresh /proc for the new pid namespace
-#   --dev /dev              — minimal /dev (urandom etc; clavifaber uses it
-#                              for keypair generation)
-#   --tmpfs /tmp            — fresh /tmp (clavifaber's AtomicFile uses
-#                              <output>.tmp adjacent to outputs, so this
-#                              isn't strictly required, but keeps the
-#                              sandbox tight)
-#   --tmpfs /etc            — empty /etc; clavifaber doesn't read /etc
-#                              (no /etc/passwd, no /etc/nsswitch needed
-#                              for these operations)
+#   --dev /dev              — minimal /dev (urandom etc)
+#   --tmpfs /tmp /etc       — fresh; sandbox tight
 #   --unshare-{pid,uts,ipc,user} — fresh namespaces; no host pollution
-#   --new-session           — new sid; doesn't share controlling tty
-#   --die-with-parent       — clavifaber dies if this script dies
 BWRAP_ARGS=(
   --ro-bind /nix /nix
+  --ro-bind "$SSH_DIR" /etc/ssh
   --bind "$STATE_DIR" /var/lib/clavifaber
   --proc /proc
   --dev /dev
   --tmpfs /tmp
-  --tmpfs /etc
+  --tmpfs /etc/clavifaber
   --setenv PATH /nix/store/none-real
   --unshare-pid --unshare-uts --unshare-ipc --unshare-user
   --new-session
@@ -100,54 +107,32 @@ BWRAP_ARGS=(
 )
 
 echo ""
-echo "--- step 1/2: IdentitySetup ---"
+echo "--- step 1/1: PublicKeyPublicationWriting ---"
 bwrap "${BWRAP_ARGS[@]}" -- \
-  "$CLAVIFABER_BIN_PATH" '(IdentitySetup "/var/lib/clavifaber")'
-
-echo ""
-echo "--- step 2/2: PublicKeyPublicationWriting ---"
-bwrap "${BWRAP_ARGS[@]}" -- \
-  "$CLAVIFABER_BIN_PATH" '(PublicKeyPublicationWriting bwrap-host "/var/lib/clavifaber" None None "/var/lib/clavifaber/publication.nota")'
+  "$CLAVIFABER_BIN_PATH" \
+  '(PublicKeyPublicationWriting bwrap-host (OpenSshPublicKeyLocation "/etc/ssh/ssh_host_ed25519_key.pub") None None "/var/lib/clavifaber/publication.nota")'
 
 echo ""
 echo "--- verifying host-visible outputs ---"
 
-KEY="$STATE_DIR/key.pem"
-PUB="$STATE_DIR/ssh.pub"
 PUBLICATION="$STATE_DIR/publication.nota"
+if [ ! -s "$PUBLICATION" ]; then
+  echo "FAIL: $PUBLICATION missing or empty"
+  exit 1
+fi
 
-for required in "$KEY" "$PUB" "$PUBLICATION"; do
-  if [ ! -s "$required" ]; then
-    echo "FAIL: $required missing or empty"
-    exit 1
-  fi
-done
-
-KEY_MODE=$(stat -c %a "$KEY")
-PUB_MODE=$(stat -c %a "$PUB")
 PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
-
-if [ "$KEY_MODE" != "600" ]; then
-  echo "FAIL: key.pem mode $KEY_MODE (expected 600)"
-  exit 1
-fi
-if [ "$PUB_MODE" != "644" ]; then
-  echo "FAIL: ssh.pub mode $PUB_MODE (expected 644)"
-  exit 1
-fi
 if [ "$PUBLICATION_MODE" != "644" ]; then
   echo "FAIL: publication.nota mode $PUBLICATION_MODE (expected 644)"
   exit 1
 fi
 
-if ! grep -q 'BEGIN PRIVATE KEY' "$KEY"; then
-  echo "FAIL: key.pem missing PEM header"
+# Clavifaber must NOT have written a key.pem — it doesn't own host keys.
+if [ -e "$STATE_DIR/key.pem" ]; then
+  echo "FAIL: clavifaber wrote key.pem; it should not own host keys"
   exit 1
 fi
-if ! head -c 12 "$PUB" | grep -q '^ssh-ed25519'; then
-  echo "FAIL: ssh.pub does not start with ssh-ed25519"
-  exit 1
-fi
+
 if ! grep -q 'PublicKeyPublication' "$PUBLICATION"; then
   echo "FAIL: publication.nota missing PublicKeyPublication record"
   exit 1
@@ -157,15 +142,14 @@ if ! grep -q 'bwrap-host' "$PUBLICATION"; then
   exit 1
 fi
 
-NODE_PUBLIC_KEY=$(cat "$PUB")
-if ! grep -qF "$NODE_PUBLIC_KEY" "$PUBLICATION"; then
-  echo "FAIL: publication.nota does not carry the host's ssh.pub"
+SSHD_PUB_KEY=$(cat "$SSH_DIR/ssh_host_ed25519_key.pub")
+if ! grep -qF "$SSHD_PUB_KEY" "$PUBLICATION"; then
+  echo "FAIL: publication.nota does not carry sshd's ssh.pub verbatim"
   exit 1
 fi
 
-echo "    key.pem (mode 0600): OK"
-echo "    ssh.pub (mode 0644): OK"
 echo "    publication.nota (mode 0644): OK"
-echo "    publication carries node_name + open_ssh_public_key: OK"
+echo "    no clavifaber-owned key.pem (sshd owns the host key): OK"
+echo "    publication carries sshd's ssh.pub verbatim: OK"
 echo ""
 echo "=== rootless deployment test PASSED ==="

@@ -51,19 +51,15 @@ echo "    keygrip: $KEYGRIP"
 gpg-connect-agent /bye 2>/dev/null
 
 echo ""
-echo "--- Phase 2: IdentitySetup ---"
+echo "--- Phase 2: Stand in for sshd by generating an Ed25519 host key ---"
+# clavifaber does NOT create SSH host keys (that's sshd's job). We
+# fabricate one here as sshd would on first boot, and the rest of the
+# lifecycle test consumes it.
 NODE_DIRECTORY="$TEST_DIRECTORY/identity-probus"
-"${CLAVIFABER[@]}" "(IdentitySetup \"$NODE_DIRECTORY\")" >/dev/null
-NODE_SSH_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
-echo "    node public key: $NODE_SSH_PUBLIC_KEY"
-
-"${CLAVIFABER[@]}" "(OpenSshPublicKeyDerivation \"$NODE_DIRECTORY\")" >/dev/null
-DERIVED_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
-if [ "$DERIVED_PUBLIC_KEY" != "$NODE_SSH_PUBLIC_KEY" ]; then
-  echo "FAIL: OpenSshPublicKeyDerivation diverged from IdentitySetup"
-  exit 1
-fi
-echo "    OpenSshPublicKeyDerivation: OK (matches)"
+mkdir -p "$NODE_DIRECTORY"
+ssh-keygen -t ed25519 -f "$NODE_DIRECTORY/ssh_host_ed25519_key" -N "" -C "probus-host" -q
+NODE_SSH_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh_host_ed25519_key.pub")
+echo "    host public key: $NODE_SSH_PUBLIC_KEY"
 
 echo ""
 echo "--- Phase 3: CertificateAuthorityIssuance ---"
@@ -130,34 +126,11 @@ NODE_SUBJECT=$(openssl x509 -in "$NODE_CERTIFICATE" -noout -subject 2>/dev/null 
 echo "    openssl subject: $NODE_SUBJECT"
 
 echo ""
-echo "--- Phase 6: Corruption recovery ---"
-CORRUPT_DIRECTORY="$TEST_DIRECTORY/identity-corrupt"
-"${CLAVIFABER[@]}" "(IdentitySetup \"$CORRUPT_DIRECTORY\")" >/dev/null
-ORIGINAL_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
-
-echo "GARBAGE" >"$CORRUPT_DIRECTORY/key.pem"
-
-"${CLAVIFABER[@]}" "(IdentitySetup \"$CORRUPT_DIRECTORY\")" >/dev/null 2>&1
-NEW_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
-
-if [ "$ORIGINAL_PUBLIC_KEY" = "$NEW_PUBLIC_KEY" ]; then
-  echo "FAIL: key not regenerated after corruption"
-  exit 1
-fi
-
-BROKEN_COUNT=$(find "$CORRUPT_DIRECTORY" -maxdepth 1 -name 'key.pem.broken.*' | wc -l)
-if [ "$BROKEN_COUNT" -lt 1 ]; then
-  echo "FAIL: broken key not preserved"
-  exit 1
-fi
-echo "    corrupt key preserved: $BROKEN_COUNT broken file(s)"
-echo "    new key generated: OK"
-
-echo ""
-echo "--- Phase 7: Second client certificate (different node) ---"
+echo "--- Phase 6: Second client certificate (different host) ---"
 SECOND_NODE_DIRECTORY="$TEST_DIRECTORY/identity-faber"
-"${CLAVIFABER[@]}" "(IdentitySetup \"$SECOND_NODE_DIRECTORY\")" >/dev/null
-SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh.pub")
+mkdir -p "$SECOND_NODE_DIRECTORY"
+ssh-keygen -t ed25519 -f "$SECOND_NODE_DIRECTORY/ssh_host_ed25519_key" -N "" -C "faber-host" -q
+SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh_host_ed25519_key.pub")
 
 SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
 "${CLAVIFABER[@]}" "(ClientCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"$SECOND_NODE_SSH_PUBLIC_KEY\" \"faber@aedifico\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
@@ -166,7 +139,7 @@ SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
 echo "    second node cert verified: OK"
 
 echo ""
-echo "--- Phase 8: YggdrasilKeypairSetup + PublicKeyPublicationWriting ---"
+echo "--- Phase 7: YggdrasilKeypairSetup + PublicKeyPublicationWriting ---"
 YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/yggdrasil/keypair.json"
 PUBLICATION="$TEST_DIRECTORY/publication.nota"
 
@@ -194,8 +167,8 @@ if [ "$YGGDRASIL_BEFORE" != "$YGGDRASIL_AFTER" ]; then
 fi
 echo "    yggdrasil keypair stable across re-run: OK"
 
-# Publication assembles typed yggdrasil projection + identity ssh.pub.
-"${CLAVIFABER[@]}" "(PublicKeyPublicationWriting probus \"$NODE_DIRECTORY\" (YggdrasilKeypairLocation \"$YGGDRASIL_KEYPAIR\") None \"$PUBLICATION\")" >/dev/null
+# Publication assembles typed yggdrasil projection + sshd-managed ssh.pub.
+"${CLAVIFABER[@]}" "(PublicKeyPublicationWriting probus (OpenSshPublicKeyLocation \"$NODE_DIRECTORY/ssh_host_ed25519_key.pub\") (YggdrasilKeypairLocation \"$YGGDRASIL_KEYPAIR\") None \"$PUBLICATION\")" >/dev/null
 
 if [ ! -s "$PUBLICATION" ]; then
   echo "FAIL: publication.nota not written"
@@ -209,6 +182,13 @@ if [ "$PUBLICATION_MODE" != "644" ]; then
   exit 1
 fi
 echo "    publication.nota mode 0644: OK"
+
+if ! grep -qF "$NODE_SSH_PUBLIC_KEY" "$PUBLICATION"; then
+  echo "FAIL: publication.nota does not carry sshd's host pubkey verbatim"
+  cat "$PUBLICATION"
+  exit 1
+fi
+echo "    publication carries sshd-managed ssh.pub: OK"
 
 if ! grep -qE '[0-9a-f]{64}' "$PUBLICATION"; then
   echo "FAIL: publication.nota missing yggdrasil public key (64-hex)"
