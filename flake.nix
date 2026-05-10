@@ -80,10 +80,22 @@
               exec bash ${./scripts/test-pki-lifecycle} clavifaber
             '';
           };
+          testDeploymentNspawn = context.pkgs.writeShellApplication {
+            name = "test-deployment-nspawn";
+            runtimeInputs = [
+              context.pkgs.coreutils
+              context.pkgs.gnugrep
+              context.pkgs.systemd
+              context.pkgs.sudo
+            ];
+            text = ''
+              exec bash ${./scripts/test-deployment-nspawn} ${clavifaber}/bin/clavifaber
+            '';
+          };
         in
         {
           default = clavifaber;
-          inherit testPkiLifecycle;
+          inherit testPkiLifecycle testDeploymentNspawn;
         }
       );
 
@@ -95,6 +107,10 @@
         test-pki-lifecycle = {
           type = "app";
           program = "${self.packages.${system}.testPkiLifecycle}/bin/test-pki-lifecycle";
+        };
+        test-deployment-nspawn = {
+          type = "app";
+          program = "${self.packages.${system}.testDeploymentNspawn}/bin/test-deployment-nspawn";
         };
       });
 
