@@ -18,18 +18,14 @@ use nota_codec::NotaRecord;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Per-host Yggdrasil identity plan declared in the Converge or
-/// PublicKeyPublication request: where the persisted keypair file
-/// lives. Mode 0600 enforced at write time.
+/// The static public projection of the per-host Yggdrasil keypair:
+/// IPv6 address (200::/7 range) + 64-hex public key. Derived from
+/// the keypair file by invoking `yggdrasil -useconffile <file>
+/// -publickey -address` (no daemon).
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct YggdrasilPlan {
-    pub keypair_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YggdrasilProjection {
-    pub public_key: String,
     pub address: String,
+    pub public_key: String,
 }
 
 pub struct YggdrasilKeypairFile {
@@ -113,27 +109,21 @@ impl YggdrasilKeypairFile {
 }
 
 fn extract_private_key(json_bytes: &[u8]) -> Result<String> {
-    let text = std::str::from_utf8(json_bytes).map_err(|error| {
-        Error::Yggdrasil(format!("yggdrasil -genconf output not utf-8: {error}"))
+    let value: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|error| {
+        Error::Yggdrasil(format!(
+            "yggdrasil -genconf output is not valid JSON: {error}"
+        ))
     })?;
-    let needle = "\"PrivateKey\"";
-    let start = text.find(needle).ok_or_else(|| {
-        Error::Yggdrasil("yggdrasil -genconf missing PrivateKey field".to_string())
-    })?;
-    let after_key = &text[start + needle.len()..];
-    let after_colon = after_key
-        .find(':')
-        .ok_or_else(|| Error::Yggdrasil("PrivateKey missing colon".to_string()))?;
-    let after_open = after_key[after_colon + 1..]
-        .find('"')
-        .ok_or_else(|| Error::Yggdrasil("PrivateKey missing opening quote".to_string()))?;
-    let value_start = after_colon + 1 + after_open + 1;
-    let close = after_key[value_start..]
-        .find('"')
-        .ok_or_else(|| Error::Yggdrasil("PrivateKey missing closing quote".to_string()))?;
-    let value = &after_key[value_start..value_start + close];
-    if value.is_empty() {
+    let private_key = value
+        .get("PrivateKey")
+        .and_then(|field| field.as_str())
+        .ok_or_else(|| {
+            Error::Yggdrasil(
+                "yggdrasil -genconf output missing string PrivateKey field".to_string(),
+            )
+        })?;
+    if private_key.is_empty() {
         return Err(Error::Yggdrasil("PrivateKey is empty".to_string()));
     }
-    Ok(value.to_string())
+    Ok(private_key.to_string())
 }

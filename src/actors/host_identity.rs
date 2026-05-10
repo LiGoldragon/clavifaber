@@ -94,3 +94,43 @@ impl Message<LoadIdentity> for HostIdentity {
         Ok(identity)
     }
 }
+
+#[derive(Debug)]
+pub struct WritePublicKeyProjection {
+    pub directory: PathBuf,
+    pub identity: NodeIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicKeyProjectionWritten {
+    pub open_ssh_public_key: String,
+}
+
+impl Message<WritePublicKeyProjection> for HostIdentity {
+    type Reply = Result<PublicKeyProjectionWritten, Error>;
+
+    async fn handle(
+        &mut self,
+        msg: WritePublicKeyProjection,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        emit(
+            self.tracer.as_ref(),
+            "HostIdentity",
+            TraceKind::MessageReceived("WritePublicKeyProjection"),
+        )
+        .await;
+        let directory = IdentityDirectory::from_path(msg.directory);
+        directory.write_public_key(&msg.identity)?;
+        let open_ssh_public_key = msg.identity.open_ssh_public_key();
+        emit(
+            self.tracer.as_ref(),
+            "HostIdentity",
+            TraceKind::MessageReplied("WritePublicKeyProjection"),
+        )
+        .await;
+        Ok(PublicKeyProjectionWritten {
+            open_ssh_public_key,
+        })
+    }
+}

@@ -1,65 +1,24 @@
-use crate::actors::publication_collector::CollectPublication;
-use crate::actors::runtime_root::RuntimeRoot;
-use crate::actors::translate_send_error;
-use crate::actors::yggdrasil_key::{EnsureYggdrasilIdentity, ReadYggdrasilProjection};
-use crate::error::Result;
-use crate::yggdrasil::{YggdrasilPlan, YggdrasilProjection};
+//! The typed `publication.nota` record clavifaber writes to a host's
+//! public-readable directory. Other hosts (or whatever the cluster
+//! consumer becomes) read this file to learn the host's public key
+//! material.
+//!
+//! Today the only writer is `PublicKeyPublicationWriting` in
+//! `src/request.rs`. Today the only reader is `cat publication.nota`
+//! during diagnostic and `tests/publication.rs` (round-trip).
+
+use crate::yggdrasil::YggdrasilProjection;
 use nota_codec::NotaRecord;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
 pub struct PublicKeyPublication {
     pub node_name: String,
     pub open_ssh_public_key: String,
-    pub yggdrasil_address: Option<String>,
-    pub yggdrasil_public_key: Option<String>,
-    pub wifi_client_certificate_pem: Option<String>,
+    pub yggdrasil: Option<YggdrasilProjection>,
+    pub wifi_client_certificate: Option<WifiClientCertificate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct PublicKeyPublicationRequest {
-    pub node_name: String,
-    pub directory: String,
-    pub yggdrasil: Option<YggdrasilPlan>,
-    pub wifi_client_certificate_pem: Option<String>,
-}
-
-impl PublicKeyPublicationRequest {
-    pub async fn collect(self) -> Result<PublicKeyPublication> {
-        let runtime = RuntimeRoot::start(None);
-        let yggdrasil = match self.yggdrasil {
-            Some(plan) => Some(yggdrasil_projection(&runtime, plan).await?),
-            None => None,
-        };
-        runtime
-            .publication_collector
-            .ask(CollectPublication {
-                node_name: self.node_name,
-                directory: PathBuf::from(self.directory),
-                yggdrasil,
-                wifi_client_certificate_pem: self.wifi_client_certificate_pem,
-            })
-            .await
-            .map_err(translate_send_error)
-    }
-}
-
-pub(crate) async fn yggdrasil_projection(
-    runtime: &RuntimeRoot,
-    plan: YggdrasilPlan,
-) -> Result<YggdrasilProjection> {
-    let keypair_path = PathBuf::from(plan.keypair_path);
-    runtime
-        .yggdrasil_key
-        .ask(EnsureYggdrasilIdentity {
-            keypair_path: keypair_path.clone(),
-        })
-        .await
-        .map_err(translate_send_error)?;
-    let projection = runtime
-        .yggdrasil_key
-        .ask(ReadYggdrasilProjection { keypair_path })
-        .await
-        .map_err(translate_send_error)?;
-    Ok(projection)
+pub struct WifiClientCertificate {
+    pub pem: String,
 }

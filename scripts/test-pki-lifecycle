@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== PKI lifecycle test ==="
+echo "=== PKI lifecycle test (NOTA-only operator surface) ==="
 echo "    test directory: $TEST_DIRECTORY"
 
 echo ""
@@ -51,24 +51,24 @@ echo "    keygrip: $KEYGRIP"
 gpg-connect-agent /bye 2>/dev/null
 
 echo ""
-echo "--- Phase 2: Generate node identity directory ---"
+echo "--- Phase 2: IdentitySetup ---"
 NODE_DIRECTORY="$TEST_DIRECTORY/identity-probus"
-"${CLAVIFABER[@]}" complex-init --dir "$NODE_DIRECTORY"
+"${CLAVIFABER[@]}" "(IdentitySetup \"$NODE_DIRECTORY\")" >/dev/null
 NODE_SSH_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
 echo "    node public key: $NODE_SSH_PUBLIC_KEY"
 
-"${CLAVIFABER[@]}" derive-pubkey --dir "$NODE_DIRECTORY" >/dev/null
+"${CLAVIFABER[@]}" "(OpenSshPublicKeyDerivation \"$NODE_DIRECTORY\")" >/dev/null
 DERIVED_PUBLIC_KEY=$(cat "$NODE_DIRECTORY/ssh.pub")
 if [ "$DERIVED_PUBLIC_KEY" != "$NODE_SSH_PUBLIC_KEY" ]; then
-  echo "FAIL: derive-pubkey diverged from init"
+  echo "FAIL: OpenSshPublicKeyDerivation diverged from IdentitySetup"
   exit 1
 fi
-echo "    derive-pubkey: OK (matches)"
+echo "    OpenSshPublicKeyDerivation: OK (matches)"
 
 echo ""
-echo "--- Phase 3: Create CA certificate ---"
+echo "--- Phase 3: CertificateAuthorityIssuance ---"
 CA_CERTIFICATE="$TEST_DIRECTORY/ca.pem"
-"${CLAVIFABER[@]}" ca-init --keygrip "$KEYGRIP" --cn "Aedifico Test CA" --out "$CA_CERTIFICATE"
+"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance $KEYGRIP \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
 
 if [ ! -s "$CA_CERTIFICATE" ]; then
   echo "FAIL: CA cert not created"
@@ -85,16 +85,21 @@ if [ "$IS_CA" -lt 1 ]; then
 fi
 echo "    CA:TRUE constraint: OK"
 
+# Idempotency on CA: re-issuance is a no-op (file already exists).
+CA_BEFORE=$(cat "$CA_CERTIFICATE")
+"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance $KEYGRIP \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
+CA_AFTER=$(cat "$CA_CERTIFICATE")
+if [ "$CA_BEFORE" != "$CA_AFTER" ]; then
+  echo "FAIL: CA cert was re-issued instead of skipped"
+  exit 1
+fi
+echo "    CA idempotency: OK (skip on existing file)"
+
 echo ""
-echo "--- Phase 4: Create server certificate ---"
+echo "--- Phase 4: ServerCertificateIssuance ---"
 SERVER_CERTIFICATE="$TEST_DIRECTORY/server.pem"
 SERVER_PRIVATE_KEY="$TEST_DIRECTORY/server.key"
-"${CLAVIFABER[@]}" server-cert \
-  --ca-keygrip "$KEYGRIP" \
-  --ca-cert "$CA_CERTIFICATE" \
-  --cn "faber.criome" \
-  --out-cert "$SERVER_CERTIFICATE" \
-  --out-key "$SERVER_PRIVATE_KEY"
+"${CLAVIFABER[@]}" "(ServerCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"faber.criome\" \"$SERVER_CERTIFICATE\" \"$SERVER_PRIVATE_KEY\")" >/dev/null
 
 if [ ! -s "$SERVER_CERTIFICATE" ] || [ ! -s "$SERVER_PRIVATE_KEY" ]; then
   echo "FAIL: server cert/key not created"
@@ -103,18 +108,13 @@ fi
 echo "    server certificate: $(wc -c <"$SERVER_CERTIFICATE") bytes"
 echo "    server private key: $(wc -c <"$SERVER_PRIVATE_KEY") bytes"
 
-"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$SERVER_CERTIFICATE"
+"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$SERVER_CERTIFICATE\")" >/dev/null
 echo "    verify chain: OK"
 
 echo ""
-echo "--- Phase 5: Create node certificate ---"
+echo "--- Phase 5: ClientCertificateIssuance ---"
 NODE_CERTIFICATE="$TEST_DIRECTORY/probus.pem"
-"${CLAVIFABER[@]}" node-cert \
-  --ca-keygrip "$KEYGRIP" \
-  --ca-cert "$CA_CERTIFICATE" \
-  --ssh-pubkey "$NODE_SSH_PUBLIC_KEY" \
-  --cn "probus@aedifico" \
-  --out "$NODE_CERTIFICATE"
+"${CLAVIFABER[@]}" "(ClientCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"$NODE_SSH_PUBLIC_KEY\" \"probus@aedifico\" \"$NODE_CERTIFICATE\")" >/dev/null
 
 if [ ! -s "$NODE_CERTIFICATE" ]; then
   echo "FAIL: node cert not created"
@@ -122,7 +122,7 @@ if [ ! -s "$NODE_CERTIFICATE" ]; then
 fi
 echo "    node certificate: $(wc -c <"$NODE_CERTIFICATE") bytes"
 
-"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$NODE_CERTIFICATE"
+"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$NODE_CERTIFICATE\")" >/dev/null
 echo "    verify chain: OK"
 NODE_SUBJECT=$(openssl x509 -in "$NODE_CERTIFICATE" -noout -subject 2>/dev/null || echo "PARSE_FAIL")
 echo "    openssl subject: $NODE_SUBJECT"
@@ -130,12 +130,12 @@ echo "    openssl subject: $NODE_SUBJECT"
 echo ""
 echo "--- Phase 6: Corruption recovery ---"
 CORRUPT_DIRECTORY="$TEST_DIRECTORY/identity-corrupt"
-"${CLAVIFABER[@]}" complex-init --dir "$CORRUPT_DIRECTORY" >/dev/null
+"${CLAVIFABER[@]}" "(IdentitySetup \"$CORRUPT_DIRECTORY\")" >/dev/null
 ORIGINAL_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
 
 echo "GARBAGE" >"$CORRUPT_DIRECTORY/key.pem"
 
-"${CLAVIFABER[@]}" complex-init --dir "$CORRUPT_DIRECTORY" >/dev/null 2>&1
+"${CLAVIFABER[@]}" "(IdentitySetup \"$CORRUPT_DIRECTORY\")" >/dev/null 2>&1
 NEW_PUBLIC_KEY=$(cat "$CORRUPT_DIRECTORY/ssh.pub")
 
 if [ "$ORIGINAL_PUBLIC_KEY" = "$NEW_PUBLIC_KEY" ]; then
@@ -152,98 +152,75 @@ echo "    corrupt key preserved: $BROKEN_COUNT broken file(s)"
 echo "    new key generated: OK"
 
 echo ""
-echo "--- Phase 7: Second node certificate ---"
+echo "--- Phase 7: Second client certificate (different node) ---"
 SECOND_NODE_DIRECTORY="$TEST_DIRECTORY/identity-faber"
-"${CLAVIFABER[@]}" complex-init --dir "$SECOND_NODE_DIRECTORY"
+"${CLAVIFABER[@]}" "(IdentitySetup \"$SECOND_NODE_DIRECTORY\")" >/dev/null
 SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh.pub")
 
 SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
-"${CLAVIFABER[@]}" node-cert \
-  --ca-keygrip "$KEYGRIP" \
-  --ca-cert "$CA_CERTIFICATE" \
-  --ssh-pubkey "$SECOND_NODE_SSH_PUBLIC_KEY" \
-  --cn "faber@aedifico" \
-  --out "$SECOND_NODE_CERTIFICATE"
+"${CLAVIFABER[@]}" "(ClientCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"$SECOND_NODE_SSH_PUBLIC_KEY\" \"faber@aedifico\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
 
-"${CLAVIFABER[@]}" verify --ca-cert "$CA_CERTIFICATE" --cert "$SECOND_NODE_CERTIFICATE"
+"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
 echo "    second node cert verified: OK"
 
 echo ""
-echo "--- Phase 8: Converge runs the full plan in one NOTA call ---"
-CONVERGE_DIRECTORY="$TEST_DIRECTORY/identity-converge"
-CONVERGE_PUBLICATION="$TEST_DIRECTORY/converge-publication.nota"
-CONVERGE_STATE="$TEST_DIRECTORY/converge-clavifaber.redb"
-CONVERGE_CA="$TEST_DIRECTORY/converge-ca.pem"
-CONVERGE_SERVER_CERT="$TEST_DIRECTORY/converge-server.pem"
-CONVERGE_SERVER_KEY="$TEST_DIRECTORY/converge-server.key"
-CONVERGE_NODE_CERT="$TEST_DIRECTORY/converge-node.pem"
-CONVERGE_YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/converge-yggdrasil/keypair.json"
+echo "--- Phase 8: YggdrasilKeypairSetup + PublicKeyPublicationWriting ---"
+YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/yggdrasil/keypair.json"
+PUBLICATION="$TEST_DIRECTORY/publication.nota"
 
-"${CLAVIFABER[@]}" complex-init --dir "$CONVERGE_DIRECTORY" >/dev/null
-CONVERGE_NODE_SSH_PUBLIC_KEY=$(cat "$CONVERGE_DIRECTORY/ssh.pub")
+"${CLAVIFABER[@]}" "(YggdrasilKeypairSetup \"$YGGDRASIL_KEYPAIR\")" >/dev/null
 
-CONVERGE_PLAN=$(cat <<EOF
-(Converge "$CONVERGE_DIRECTORY" probus "$CONVERGE_PUBLICATION" (YggdrasilPlan "$CONVERGE_YGGDRASIL_KEYPAIR") None "$CONVERGE_STATE" (CertificateAuthorityPlan "$KEYGRIP" "Aedifico Converge CA" "$CONVERGE_CA") (ServerCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "faber.converge.criome" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY") [(NodeCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "$CONVERGE_NODE_SSH_PUBLIC_KEY" "probus@converge" "$CONVERGE_NODE_CERT")])
-EOF
-)
-
-CONVERGE_FIRST_REPLY=$("${CLAVIFABER[@]}" "$CONVERGE_PLAN")
-echo "    first converge reply: $CONVERGE_FIRST_REPLY"
-
-if ! echo "$CONVERGE_FIRST_REPLY" | grep -q 'true'; then
-  echo "FAIL: first converge did not record work_performed = true"
+if [ ! -s "$YGGDRASIL_KEYPAIR" ]; then
+  echo "FAIL: yggdrasil keypair not created"
   exit 1
 fi
 
-for required in "$CONVERGE_PUBLICATION" "$CONVERGE_STATE" "$CONVERGE_CA" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY" "$CONVERGE_NODE_CERT" "$CONVERGE_YGGDRASIL_KEYPAIR"; do
-  if [ ! -s "$required" ]; then
-    echo "FAIL: converge did not produce $required"
-    exit 1
-  fi
-done
-
-YGGDRASIL_KEYPAIR_MODE=$(stat -c %a "$CONVERGE_YGGDRASIL_KEYPAIR")
+YGGDRASIL_KEYPAIR_MODE=$(stat -c %a "$YGGDRASIL_KEYPAIR")
 if [ "$YGGDRASIL_KEYPAIR_MODE" != "600" ]; then
-  echo "FAIL: yggdrasil keypair file mode is $YGGDRASIL_KEYPAIR_MODE, expected 600"
+  echo "FAIL: yggdrasil keypair mode is $YGGDRASIL_KEYPAIR_MODE, expected 600"
   exit 1
 fi
-echo "    yggdrasil keypair file mode 0600: OK"
+echo "    yggdrasil keypair mode 0600: OK"
 
-if ! grep -q '"PrivateKey"' "$CONVERGE_YGGDRASIL_KEYPAIR"; then
-  echo "FAIL: yggdrasil keypair file missing PrivateKey field"
-  cat "$CONVERGE_YGGDRASIL_KEYPAIR"
+# Idempotency: re-running keeps the same keypair.
+YGGDRASIL_BEFORE=$(cat "$YGGDRASIL_KEYPAIR")
+"${CLAVIFABER[@]}" "(YggdrasilKeypairSetup \"$YGGDRASIL_KEYPAIR\")" >/dev/null
+YGGDRASIL_AFTER=$(cat "$YGGDRASIL_KEYPAIR")
+if [ "$YGGDRASIL_BEFORE" != "$YGGDRASIL_AFTER" ]; then
+  echo "FAIL: yggdrasil keypair rotated under re-run (must stay stable)"
   exit 1
 fi
+echo "    yggdrasil keypair stable across re-run: OK"
 
-if ! grep -qE '[0-9a-f]{64}' "$CONVERGE_PUBLICATION"; then
+# Publication assembles typed yggdrasil projection + identity ssh.pub.
+"${CLAVIFABER[@]}" "(PublicKeyPublicationWriting probus \"$NODE_DIRECTORY\" (YggdrasilKeypairLocation \"$YGGDRASIL_KEYPAIR\") None \"$PUBLICATION\")" >/dev/null
+
+if [ ! -s "$PUBLICATION" ]; then
+  echo "FAIL: publication.nota not written"
+  exit 1
+fi
+echo "    publication.nota: $(wc -c <"$PUBLICATION") bytes"
+
+PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
+if [ "$PUBLICATION_MODE" != "644" ]; then
+  echo "FAIL: publication.nota mode is $PUBLICATION_MODE, expected 644"
+  exit 1
+fi
+echo "    publication.nota mode 0644: OK"
+
+if ! grep -qE '[0-9a-f]{64}' "$PUBLICATION"; then
   echo "FAIL: publication.nota missing yggdrasil public key (64-hex)"
-  cat "$CONVERGE_PUBLICATION"
+  cat "$PUBLICATION"
   exit 1
 fi
 echo "    publication carries yggdrasil hex public key: OK"
 
-"${CLAVIFABER[@]}" verify --ca-cert "$CONVERGE_CA" --cert "$CONVERGE_SERVER_CERT" >/dev/null
-echo "    converged server cert verifies against converged CA: OK"
-"${CLAVIFABER[@]}" verify --ca-cert "$CONVERGE_CA" --cert "$CONVERGE_NODE_CERT" >/dev/null
-echo "    converged node cert verifies against converged CA: OK"
-
-CONVERGE_SECOND_REPLY=$("${CLAVIFABER[@]}" "$CONVERGE_PLAN")
-echo "    second converge reply: $CONVERGE_SECOND_REPLY"
-
-if ! echo "$CONVERGE_SECOND_REPLY" | grep -q 'false'; then
-  echo "FAIL: gate did not skip on identical input — work_performed must be false on rerun"
+if ! grep -q 'YggdrasilProjection' "$PUBLICATION"; then
+  echo "FAIL: publication.nota missing typed YggdrasilProjection record"
+  cat "$PUBLICATION"
   exit 1
 fi
-echo "    gate skipped on identical input: OK"
-
-YGGDRASIL_KEYPAIR_BEFORE=$(cat "$CONVERGE_YGGDRASIL_KEYPAIR")
-"${CLAVIFABER[@]}" "$CONVERGE_PLAN" >/dev/null
-YGGDRASIL_KEYPAIR_AFTER=$(cat "$CONVERGE_YGGDRASIL_KEYPAIR")
-if [ "$YGGDRASIL_KEYPAIR_BEFORE" != "$YGGDRASIL_KEYPAIR_AFTER" ]; then
-  echo "FAIL: yggdrasil keypair rotated under re-converge (must stay stable)"
-  exit 1
-fi
-echo "    yggdrasil keypair stable across re-converge: OK"
+echo "    publication carries typed YggdrasilProjection record: OK"
 
 echo ""
 echo "=== ALL TESTS PASSED ==="

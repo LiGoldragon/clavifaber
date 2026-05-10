@@ -6,6 +6,7 @@ use der::asn1::{BitString, ObjectIdentifier, OctetString, SetOfVec};
 use der::{Any, Decode, Encode, Tag};
 use sha2::{Digest, Sha256};
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
+use std::time::SystemTime;
 use x509_cert::attr::AttributeTypeAndValue;
 use x509_cert::name::{Name, RdnSequence, RelativeDistinguishedName};
 use x509_cert::serial_number::SerialNumber;
@@ -291,6 +292,10 @@ impl<'certificate> CertificateChain<'certificate> {
     }
 
     pub fn verify(&self) -> Result<()> {
+        self.verify_with_clock(SystemTime::now())
+    }
+
+    pub fn verify_with_clock(&self, now: SystemTime) -> Result<()> {
         let certificate_authority = self
             .certificate_authority
             .certificate("certificate authority")?;
@@ -313,11 +318,54 @@ impl<'certificate> CertificateChain<'certificate> {
             ));
         }
 
+        CertificateValidity::from_tbs(&certificate.tbs_certificate)?.assert_includes(now)?;
+
         CertificateSignature {
             certificate_authority,
             certificate,
         }
         .verify()
+    }
+}
+
+struct CertificateValidity {
+    not_before: SystemTime,
+    not_after: SystemTime,
+}
+
+impl CertificateValidity {
+    fn from_tbs(tbs: &TbsCertificate) -> Result<Self> {
+        let not_before = tbs.validity.not_before.to_system_time();
+        let not_after = tbs.validity.not_after.to_system_time();
+        Ok(Self {
+            not_before,
+            not_after,
+        })
+    }
+
+    fn assert_includes(&self, now: SystemTime) -> Result<()> {
+        if now < self.not_before {
+            return Err(Error::Certificate(format!(
+                "certificate not yet valid: now {} is before not_before {}",
+                format_systemtime(now),
+                format_systemtime(self.not_before),
+            )));
+        }
+        if now > self.not_after {
+            return Err(Error::Certificate(format!(
+                "certificate expired: now {} is after not_after {}",
+                format_systemtime(now),
+                format_systemtime(self.not_after),
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn format_systemtime(time: SystemTime) -> String {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => format!("epoch+{}s", duration.as_secs()),
+        Err(_) => "<pre-epoch>".to_string(),
     }
 }
 

@@ -2,41 +2,33 @@ use crate::actors::certificate_issuer::{
     IssueCertificateAuthority, IssueNodeCertificate, IssueServerCertificate, VerifyCertificateChain,
 };
 use crate::actors::gpg_agent_session::ReadEd25519PublicKey;
-use crate::actors::host_identity::{EnsureIdentity, LoadIdentity};
-use crate::actors::publication_collector::CollectPublication;
+use crate::actors::host_identity::{EnsureIdentity, LoadIdentity, WritePublicKeyProjection};
 use crate::actors::runtime_root::RuntimeRoot;
-use crate::actors::ssh_host_key::WritePublicKeyProjection;
 use crate::actors::translate_send_error;
-use crate::actors::wifi_certificate::{
-    EnsureWifiClientCertificate, EnsureWifiServerCertificate, WifiClientCertificatePlan,
-    WifiServerCertificatePlan,
-};
+use crate::actors::yggdrasil_key::{EnsureYggdrasilIdentity, ReadYggdrasilProjection};
 use crate::error::{Error, Result};
-use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest, yggdrasil_projection};
-use crate::ssh_key::OpenSshPublicKey;
-use crate::state::{ConvergenceLedgerEntry, InputHash, State};
+use crate::publication::{PublicKeyPublication, WifiClientCertificate};
+use crate::ssh_key::OpenSshPublicKey as SshKeyText;
 use crate::util::AtomicFile;
 use crate::x509::{
     CertificateAuthorityCertificateRequest, CertificateDer, Ed25519SubjectPublicKey,
     NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
-use crate::yggdrasil::YggdrasilPlan;
+use crate::yggdrasil::YggdrasilProjection;
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaRecord, NotaSum};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
-#[allow(clippy::large_enum_variant)]
 pub enum ClaviFaberRequest {
-    CertificateAuthorityInitialization(CertificateAuthorityInitialization),
-    ServerCertificateCreation(ServerCertificateCreation),
-    NodeCertificateCreation(NodeCertificateCreation),
-    IdentityDirectoryInitialization(IdentityDirectoryInitialization),
-    PublicKeyDerivation(PublicKeyDerivation),
-    CertificateVerification(CertificateVerification),
-    PublicKeyPublicationRequest(PublicKeyPublicationRequest),
-    Converge(Converge),
-    InspectState(InspectState),
+    IdentitySetup(IdentitySetup),
+    OpenSshPublicKeyDerivation(OpenSshPublicKeyDerivation),
+    CertificateAuthorityIssuance(CertificateAuthorityIssuance),
+    ServerCertificateIssuance(ServerCertificateIssuance),
+    ClientCertificateIssuance(ClientCertificateIssuance),
+    CertificateChainVerification(CertificateChainVerification),
+    YggdrasilKeypairSetup(YggdrasilKeypairSetup),
+    PublicKeyPublicationWriting(PublicKeyPublicationWriting),
 }
 
 impl ClaviFaberRequest {
@@ -61,31 +53,28 @@ impl ClaviFaberRequest {
 
     pub async fn execute(self) -> Result<ClaviFaberResponse> {
         match self {
-            Self::CertificateAuthorityInitialization(request) => request.execute().await,
-            Self::ServerCertificateCreation(request) => request.execute().await,
-            Self::NodeCertificateCreation(request) => request.execute().await,
-            Self::IdentityDirectoryInitialization(request) => request.execute().await,
-            Self::PublicKeyDerivation(request) => request.execute().await,
-            Self::CertificateVerification(request) => request.execute().await,
-            Self::PublicKeyPublicationRequest(request) => Ok(
-                ClaviFaberResponse::PublicKeyPublication(request.collect().await?),
-            ),
-            Self::Converge(request) => request.execute().await,
-            Self::InspectState(request) => request.execute(),
+            Self::IdentitySetup(request) => request.execute().await,
+            Self::OpenSshPublicKeyDerivation(request) => request.execute().await,
+            Self::CertificateAuthorityIssuance(request) => request.execute().await,
+            Self::ServerCertificateIssuance(request) => request.execute().await,
+            Self::ClientCertificateIssuance(request) => request.execute().await,
+            Self::CertificateChainVerification(request) => request.execute().await,
+            Self::YggdrasilKeypairSetup(request) => request.execute().await,
+            Self::PublicKeyPublicationWriting(request) => request.execute().await,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
 pub enum ClaviFaberResponse {
+    IdentitySet(IdentitySet),
+    OpenSshPublicKeyDerived(OpenSshPublicKeyDerived),
     CertificateAuthorityCertificateWritten(CertificateAuthorityCertificateWritten),
     ServerCertificateWritten(ServerCertificateWritten),
-    NodeCertificateWritten(NodeCertificateWritten),
-    PublicKeyProjection(PublicKeyProjection),
+    ClientCertificateWritten(ClientCertificateWritten),
     CertificateChainVerified(CertificateChainVerified),
-    PublicKeyPublication(PublicKeyPublication),
-    ConvergenceComplete(ConvergenceComplete),
-    StateReport(StateReport),
+    YggdrasilKeypairSet(YggdrasilKeypairSet),
+    PublicKeyPublicationWritten(PublicKeyPublicationWritten),
 }
 
 impl ClaviFaberResponse {
@@ -109,15 +98,107 @@ impl ClaviFaberResponse {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+//  IdentitySetup — ensure host SSH ed25519 identity exists on disk.
+// ───────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct CertificateAuthorityInitialization {
+pub struct IdentitySetup {
+    pub directory: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct IdentitySet {
+    pub directory: String,
+    pub open_ssh_public_key: String,
+}
+
+impl IdentitySetup {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let directory = PathBuf::from(&self.directory);
+        let identity = runtime
+            .host_identity
+            .ask(EnsureIdentity {
+                directory: directory.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
+        Ok(ClaviFaberResponse::IdentitySet(IdentitySet {
+            directory: self.directory,
+            open_ssh_public_key: identity.open_ssh_public_key(),
+        }))
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────
+//  OpenSshPublicKeyDerivation — re-derive ssh.pub from the private key.
+// ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct OpenSshPublicKeyDerivation {
+    pub directory: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct OpenSshPublicKeyDerived {
+    pub open_ssh_public_key: String,
+}
+
+impl OpenSshPublicKeyDerivation {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let directory = PathBuf::from(&self.directory);
+        let identity = runtime
+            .host_identity
+            .ask(LoadIdentity {
+                directory: directory.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
+        let projection = runtime
+            .host_identity
+            .ask(WritePublicKeyProjection {
+                directory,
+                identity,
+            })
+            .await
+            .map_err(translate_send_error)?;
+        Ok(ClaviFaberResponse::OpenSshPublicKeyDerived(
+            OpenSshPublicKeyDerived {
+                open_ssh_public_key: projection.open_ssh_public_key,
+            },
+        ))
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────
+//  CertificateAuthorityIssuance — sign a CA cert against a GPG keygrip.
+//  Idempotent: if `output` exists and is a parseable cert, skip.
+// ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct CertificateAuthorityIssuance {
     pub keygrip: String,
     pub common_name: String,
     pub output: String,
 }
 
-impl CertificateAuthorityInitialization {
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct CertificateAuthorityCertificateWritten {
+    pub output: String,
+}
+
+impl CertificateAuthorityIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
+        let output_path = PathBuf::from(&self.output);
+        if output_path.exists() {
+            return Ok(ClaviFaberResponse::CertificateAuthorityCertificateWritten(
+                CertificateAuthorityCertificateWritten {
+                    output: self.output,
+                },
+            ));
+        }
         let runtime = RuntimeRoot::start(None);
         let public_key_bytes = runtime
             .gpg_agent_session
@@ -139,7 +220,7 @@ impl CertificateAuthorityInitialization {
             })
             .await
             .map_err(translate_send_error)?;
-        TextFile::from_path(&self.output).write_public(&certificate.to_pem()?)?;
+        AtomicFile::new(output_path).write_bytes(certificate.to_pem()?.as_bytes(), 0o644)?;
         Ok(ClaviFaberResponse::CertificateAuthorityCertificateWritten(
             CertificateAuthorityCertificateWritten {
                 output: self.output,
@@ -148,8 +229,13 @@ impl CertificateAuthorityInitialization {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+//  ServerCertificateIssuance — sign a P-256 server cert from the CA.
+//  Idempotent: skip when both output files already exist.
+// ───────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct ServerCertificateCreation {
+pub struct ServerCertificateIssuance {
     pub certificate_authority_keygrip: String,
     pub certificate_authority_certificate: String,
     pub common_name: String,
@@ -157,11 +243,27 @@ pub struct ServerCertificateCreation {
     pub output_private_key: String,
 }
 
-impl ServerCertificateCreation {
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct ServerCertificateWritten {
+    pub certificate: String,
+    pub private_key: String,
+}
+
+impl ServerCertificateIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
+        let certificate_path = PathBuf::from(&self.output_certificate);
+        let private_key_path = PathBuf::from(&self.output_private_key);
+        if certificate_path.exists() && private_key_path.exists() {
+            return Ok(ClaviFaberResponse::ServerCertificateWritten(
+                ServerCertificateWritten {
+                    certificate: self.output_certificate,
+                    private_key: self.output_private_key,
+                },
+            ));
+        }
         let runtime = RuntimeRoot::start(None);
         let certificate_authority =
-            TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
+            read_certificate(Path::new(&self.certificate_authority_certificate))?;
         let server_certificate = runtime
             .certificate_issuer
             .ask(IssueServerCertificate {
@@ -171,11 +273,7 @@ impl ServerCertificateCreation {
             })
             .await
             .map_err(translate_send_error)?;
-        ServerCertificateFiles {
-            certificate: TextFile::from_path(&self.output_certificate),
-            private_key: TextFile::from_path(&self.output_private_key),
-        }
-        .write(&server_certificate)?;
+        write_server_certificate(&certificate_path, &private_key_path, &server_certificate)?;
         Ok(ClaviFaberResponse::ServerCertificateWritten(
             ServerCertificateWritten {
                 certificate: self.output_certificate,
@@ -185,8 +283,13 @@ impl ServerCertificateCreation {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+//  ClientCertificateIssuance — sign a per-host client cert from the CA.
+//  Idempotent: skip when output file already exists.
+// ───────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct NodeCertificateCreation {
+pub struct ClientCertificateIssuance {
     pub certificate_authority_keygrip: String,
     pub certificate_authority_certificate: String,
     pub open_ssh_public_key: String,
@@ -194,13 +297,26 @@ pub struct NodeCertificateCreation {
     pub output: String,
 }
 
-impl NodeCertificateCreation {
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct ClientCertificateWritten {
+    pub output: String,
+}
+
+impl ClientCertificateIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
+        let output_path = PathBuf::from(&self.output);
+        if output_path.exists() {
+            return Ok(ClaviFaberResponse::ClientCertificateWritten(
+                ClientCertificateWritten {
+                    output: self.output,
+                },
+            ));
+        }
         let runtime = RuntimeRoot::start(None);
         let certificate_authority =
-            TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
+            read_certificate(Path::new(&self.certificate_authority_certificate))?;
         let subject_public_key_info =
-            OpenSshPublicKey::from_text(self.open_ssh_public_key)?.subject_public_key_info()?;
+            SshKeyText::from_text(self.open_ssh_public_key)?.subject_public_key_info()?;
         let certificate = runtime
             .certificate_issuer
             .ask(IssueNodeCertificate {
@@ -213,82 +329,36 @@ impl NodeCertificateCreation {
             })
             .await
             .map_err(translate_send_error)?;
-        TextFile::from_path(&self.output).write_public(&certificate.to_pem()?)?;
-        Ok(ClaviFaberResponse::NodeCertificateWritten(
-            NodeCertificateWritten {
+        AtomicFile::new(output_path).write_bytes(certificate.to_pem()?.as_bytes(), 0o644)?;
+        Ok(ClaviFaberResponse::ClientCertificateWritten(
+            ClientCertificateWritten {
                 output: self.output,
             },
         ))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct IdentityDirectoryInitialization {
-    pub directory: String,
-}
-
-impl IdentityDirectoryInitialization {
-    async fn execute(self) -> Result<ClaviFaberResponse> {
-        let runtime = RuntimeRoot::start(None);
-        let identity = runtime
-            .host_identity
-            .ask(EnsureIdentity {
-                directory: PathBuf::from(self.directory),
-            })
-            .await
-            .map_err(translate_send_error)?;
-        Ok(ClaviFaberResponse::PublicKeyProjection(
-            PublicKeyProjection {
-                open_ssh_public_key: identity.open_ssh_public_key(),
-            },
-        ))
-    }
-}
+// ───────────────────────────────────────────────────────────────────
+//  CertificateChainVerification — issuer + signature + validity-window check.
+// ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct PublicKeyDerivation {
-    pub directory: String,
-}
-
-impl PublicKeyDerivation {
-    async fn execute(self) -> Result<ClaviFaberResponse> {
-        let runtime = RuntimeRoot::start(None);
-        let directory = PathBuf::from(self.directory);
-        let identity = runtime
-            .host_identity
-            .ask(LoadIdentity {
-                directory: directory.clone(),
-            })
-            .await
-            .map_err(translate_send_error)?;
-        let projection = runtime
-            .ssh_host_key
-            .ask(WritePublicKeyProjection {
-                directory,
-                identity,
-            })
-            .await
-            .map_err(translate_send_error)?;
-        Ok(ClaviFaberResponse::PublicKeyProjection(
-            PublicKeyProjection {
-                open_ssh_public_key: projection.open_ssh_public_key,
-            },
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct CertificateVerification {
+pub struct CertificateChainVerification {
     pub certificate_authority_certificate: String,
     pub certificate: String,
 }
 
-impl CertificateVerification {
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct CertificateChainVerified {
+    pub certificate: String,
+}
+
+impl CertificateChainVerification {
     async fn execute(self) -> Result<ClaviFaberResponse> {
         let runtime = RuntimeRoot::start(None);
         let certificate_authority =
-            TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
-        let certificate = TextFile::from_path(&self.certificate).read_certificate()?;
+            read_certificate(Path::new(&self.certificate_authority_certificate))?;
+        let certificate = read_certificate(Path::new(&self.certificate))?;
         runtime
             .certificate_issuer
             .ask(VerifyCertificateChain {
@@ -305,228 +375,158 @@ impl CertificateVerification {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+//  YggdrasilKeypairSetup — generate the per-host yggdrasil keypair file.
+//  Idempotent: handled inside YggdrasilKey actor.
+// ───────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct CertificateAuthorityCertificateWritten {
-    pub output: String,
+pub struct YggdrasilKeypairSetup {
+    pub keypair_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct ServerCertificateWritten {
-    pub certificate: String,
-    pub private_key: String,
+pub struct YggdrasilKeypairSet {
+    pub keypair_path: String,
+    pub projection: YggdrasilProjection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct NodeCertificateWritten {
-    pub output: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct PublicKeyProjection {
-    pub open_ssh_public_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct CertificateChainVerified {
-    pub certificate: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct Converge {
-    pub identity_directory: String,
-    pub node_name: String,
-    pub publication_output: String,
-    pub yggdrasil: Option<YggdrasilPlan>,
-    pub wifi_client_certificate_pem: Option<String>,
-    pub state_database: String,
-    pub certificate_authority: Option<CertificateAuthorityPlan>,
-    pub server_certificate: Option<ServerCertificatePlan>,
-    pub node_certificates: Vec<NodeCertificatePlan>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct CertificateAuthorityPlan {
-    pub keygrip: String,
-    pub common_name: String,
-    pub output: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct ServerCertificatePlan {
-    pub keygrip: String,
-    pub certificate_authority: String,
-    pub common_name: String,
-    pub output_certificate: String,
-    pub output_private_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct NodeCertificatePlan {
-    pub keygrip: String,
-    pub certificate_authority: String,
-    pub open_ssh_public_key: String,
-    pub common_name: String,
-    pub output: String,
-}
-
-impl Converge {
+impl YggdrasilKeypairSetup {
     async fn execute(self) -> Result<ClaviFaberResponse> {
-        let state = State::open(&self.state_database)?;
-        let plan = self.plan_bytes()?;
-        let current_hash = InputHash::of_bytes(&plan);
-        if let Some(entry) = state.read_converge_entry()?
-            && entry.last_input_hash == current_hash
-        {
-            return Ok(ClaviFaberResponse::ConvergenceComplete(
-                ConvergenceComplete {
-                    publication_output: self.publication_output,
-                    work_performed: false,
-                },
-            ));
-        }
-        self.run_actors().await?;
-        state.record_converge(&ConvergenceLedgerEntry {
-            last_input_hash: current_hash,
-        })?;
-        Ok(ClaviFaberResponse::ConvergenceComplete(
-            ConvergenceComplete {
-                publication_output: self.publication_output,
-                work_performed: true,
+        let runtime = RuntimeRoot::start(None);
+        let keypair_path = PathBuf::from(&self.keypair_path);
+        runtime
+            .yggdrasil_key
+            .ask(EnsureYggdrasilIdentity {
+                keypair_path: keypair_path.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
+        let projection = runtime
+            .yggdrasil_key
+            .ask(ReadYggdrasilProjection { keypair_path })
+            .await
+            .map_err(translate_send_error)?;
+        Ok(ClaviFaberResponse::YggdrasilKeypairSet(
+            YggdrasilKeypairSet {
+                keypair_path: self.keypair_path,
+                projection,
             },
         ))
     }
+}
 
-    async fn run_actors(&self) -> Result<()> {
+// ───────────────────────────────────────────────────────────────────
+//  PublicKeyPublicationWriting — assemble and atomically write
+//  publication.nota with typed identity / yggdrasil / wifi-cert fields.
+// ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct PublicKeyPublicationWriting {
+    pub node_name: String,
+    pub identity_directory: String,
+    pub yggdrasil_keypair: Option<YggdrasilKeypairLocation>,
+    pub wifi_client_certificate: Option<WifiClientCertificateLocation>,
+    pub publication_output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct YggdrasilKeypairLocation {
+    pub keypair_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct WifiClientCertificateLocation {
+    pub certificate_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct PublicKeyPublicationWritten {
+    pub publication_output: String,
+}
+
+impl PublicKeyPublicationWriting {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
         let runtime = RuntimeRoot::start(None);
-        let directory = PathBuf::from(&self.identity_directory);
-        runtime
+        let identity_directory = PathBuf::from(&self.identity_directory);
+        let identity = runtime
             .host_identity
-            .ask(EnsureIdentity {
-                directory: directory.clone(),
+            .ask(LoadIdentity {
+                directory: identity_directory,
             })
             .await
             .map_err(translate_send_error)?;
-        if let Some(plan) = &self.certificate_authority {
-            converge_certificate_authority(&runtime, plan).await?;
-        }
-        if let Some(plan) = &self.server_certificate {
-            runtime
-                .wifi_certificate
-                .ask(EnsureWifiServerCertificate {
-                    plan: WifiServerCertificatePlan {
-                        keygrip: plan.keygrip.clone(),
-                        certificate_authority: PathBuf::from(&plan.certificate_authority),
-                        common_name: plan.common_name.clone(),
-                        output_certificate: PathBuf::from(&plan.output_certificate),
-                        output_private_key: PathBuf::from(&plan.output_private_key),
-                    },
-                })
-                .await
-                .map_err(translate_send_error)?;
-        }
-        for plan in &self.node_certificates {
-            runtime
-                .wifi_certificate
-                .ask(EnsureWifiClientCertificate {
-                    plan: WifiClientCertificatePlan {
-                        keygrip: plan.keygrip.clone(),
-                        certificate_authority: PathBuf::from(&plan.certificate_authority),
-                        open_ssh_public_key: plan.open_ssh_public_key.clone(),
-                        common_name: plan.common_name.clone(),
-                        output: PathBuf::from(&plan.output),
-                    },
-                })
-                .await
-                .map_err(translate_send_error)?;
-        }
-        let yggdrasil = match &self.yggdrasil {
-            Some(plan) => Some(yggdrasil_projection(&runtime, plan.clone()).await?),
+        let yggdrasil = match &self.yggdrasil_keypair {
+            Some(location) => {
+                let keypair_path = PathBuf::from(&location.keypair_path);
+                let projection = runtime
+                    .yggdrasil_key
+                    .ask(ReadYggdrasilProjection {
+                        keypair_path: keypair_path.clone(),
+                    })
+                    .await
+                    .map_err(translate_send_error)?;
+                Some(projection)
+            }
             None => None,
         };
-        let publication = runtime
-            .publication_collector
-            .ask(CollectPublication {
-                node_name: self.node_name.clone(),
-                directory,
-                yggdrasil,
-                wifi_client_certificate_pem: self.wifi_client_certificate_pem.clone(),
-            })
-            .await
-            .map_err(translate_send_error)?;
+        let wifi_client_certificate = match &self.wifi_client_certificate {
+            Some(location) => {
+                let pem = std::fs::read_to_string(Path::new(&location.certificate_path)).map_err(
+                    |source| Error::Io {
+                        path: PathBuf::from(&location.certificate_path),
+                        source,
+                    },
+                )?;
+                Some(WifiClientCertificate { pem })
+            }
+            None => None,
+        };
+        let publication = PublicKeyPublication {
+            node_name: self.node_name,
+            open_ssh_public_key: identity.open_ssh_public_key(),
+            yggdrasil,
+            wifi_client_certificate,
+        };
         let mut encoder = Encoder::new();
         publication.encode(&mut encoder)?;
         let publication_text = encoder.into_string();
         AtomicFile::new(PathBuf::from(&self.publication_output))
             .write_bytes(publication_text.as_bytes(), 0o644)?;
-        Ok(())
-    }
-
-    fn plan_bytes(&self) -> Result<Vec<u8>> {
-        let mut encoder = Encoder::new();
-        self.encode(&mut encoder)?;
-        Ok(encoder.into_string().into_bytes())
+        Ok(ClaviFaberResponse::PublicKeyPublicationWritten(
+            PublicKeyPublicationWritten {
+                publication_output: self.publication_output,
+            },
+        ))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct ConvergenceComplete {
-    pub publication_output: String,
-    pub work_performed: bool,
+// ───────────────────────────────────────────────────────────────────
+//  Helpers (keep them small; AtomicFile owns the write side).
+// ───────────────────────────────────────────────────────────────────
+
+fn read_certificate(path: &Path) -> Result<CertificateDer> {
+    let pem = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    CertificateDer::from_pem(&pem)
 }
 
-async fn converge_certificate_authority(
-    runtime: &RuntimeRoot,
-    plan: &CertificateAuthorityPlan,
+fn write_server_certificate(
+    certificate_path: &Path,
+    private_key_path: &Path,
+    server_certificate: &ServerCertificate,
 ) -> Result<()> {
-    let public_key_bytes = runtime
-        .gpg_agent_session
-        .ask(ReadEd25519PublicKey {
-            keygrip: plan.keygrip.clone(),
-        })
-        .await
-        .map_err(translate_send_error)?;
-    let subject_public_key_info =
-        Ed25519SubjectPublicKey::from_bytes(public_key_bytes).subject_public_key_info()?;
-    let certificate = runtime
-        .certificate_issuer
-        .ask(IssueCertificateAuthority {
-            keygrip: plan.keygrip.clone(),
-            request: CertificateAuthorityCertificateRequest::new(
-                plan.common_name.clone(),
-                subject_public_key_info,
-            ),
-        })
-        .await
-        .map_err(translate_send_error)?;
-    TextFile::from_path(&plan.output).write_public(&certificate.to_pem()?)
+    AtomicFile::new(certificate_path.to_path_buf())
+        .write_bytes(server_certificate.certificate().to_pem()?.as_bytes(), 0o644)?;
+    AtomicFile::new(private_key_path.to_path_buf())
+        .write_bytes(server_certificate.private_key_pem().as_bytes(), 0o600)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct InspectState {
-    pub state_database: String,
-}
-
-impl InspectState {
-    fn execute(self) -> Result<ClaviFaberResponse> {
-        let state = State::open(&self.state_database)?;
-        let entry = state.read_converge_entry()?;
-        Ok(ClaviFaberResponse::StateReport(StateReport {
-            converge: entry.map(|entry| ConvergeLedger {
-                last_input_hash_hex: hex::encode(entry.last_input_hash.0),
-            }),
-        }))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct StateReport {
-    pub converge: Option<ConvergeLedger>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
-pub struct ConvergeLedger {
-    pub last_input_hash_hex: String,
-}
+// ───────────────────────────────────────────────────────────────────
+//  Inline-NOTA argv parser (the only operator surface).
+// ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandLine {
@@ -548,19 +548,11 @@ impl CommandLine {
         }
     }
 
-    pub fn inline_request(&self) -> Result<Option<ClaviFaberRequest>> {
-        let Some(first) = self.arguments.first() else {
-            return Ok(None);
-        };
-        if !CommandLineArgument::new(first).starts_inline_record() {
-            return Ok(None);
-        }
-        Ok(Some(ClaviFaberRequest::from_nota(
-            &self.inline_nota_text()?,
-        )?))
+    pub fn parse_request(&self) -> Result<ClaviFaberRequest> {
+        ClaviFaberRequest::from_nota(&self.text()?)
     }
 
-    fn inline_nota_text(&self) -> Result<String> {
+    fn text(&self) -> Result<String> {
         let mut parts = Vec::new();
         for argument in &self.arguments {
             let Some(text) = argument.to_str() else {
@@ -571,62 +563,5 @@ impl CommandLine {
             parts.push(text.to_string());
         }
         Ok(parts.join(" "))
-    }
-}
-
-struct CommandLineArgument<'argument> {
-    argument: &'argument OsString,
-}
-
-impl<'argument> CommandLineArgument<'argument> {
-    fn new(argument: &'argument OsString) -> Self {
-        Self { argument }
-    }
-
-    fn starts_inline_record(&self) -> bool {
-        self.argument.to_string_lossy().starts_with('(')
-    }
-}
-
-struct TextFile {
-    path: PathBuf,
-}
-
-impl TextFile {
-    fn from_path(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    fn read(&self) -> Result<String> {
-        std::fs::read_to_string(&self.path).map_err(|source| Error::Io {
-            path: self.path.clone(),
-            source,
-        })
-    }
-
-    fn read_certificate(&self) -> Result<CertificateDer> {
-        CertificateDer::from_pem(&self.read()?)
-    }
-
-    fn write_public(&self, contents: &str) -> Result<()> {
-        AtomicFile::new(self.path.clone()).write_bytes(contents.as_bytes(), 0o644)
-    }
-
-    fn write_private(&self, contents: &str) -> Result<()> {
-        AtomicFile::new(self.path.clone()).write_bytes(contents.as_bytes(), 0o600)
-    }
-}
-
-struct ServerCertificateFiles {
-    certificate: TextFile,
-    private_key: TextFile,
-}
-
-impl ServerCertificateFiles {
-    fn write(&self, server_certificate: &ServerCertificate) -> Result<()> {
-        self.certificate
-            .write_public(&server_certificate.certificate().to_pem()?)?;
-        self.private_key
-            .write_private(server_certificate.private_key_pem())
     }
 }

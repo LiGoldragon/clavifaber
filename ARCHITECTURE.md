@@ -1,219 +1,107 @@
 # ClaviFaber Architecture
 
-ClaviFaber forms and publishes host key material for CriomOS nodes. It is a
-local authority over private host material and a producer of public
-projections; it is not the cluster database itself.
+ClaviFaber is a host-key-material producer. It mints, persists, and
+projects the cryptographic identities a CriomOS host needs to participate
+in the cluster: SSH ed25519 host identity, X.509 certificates against a
+GPG-Ed25519 cluster CA, Yggdrasil keypair, and a typed `publication.nota`
+file that other hosts (or future cluster components) read.
+
+It is **not** a convergence runner. The orchestration question — "is this
+host's actual state matching the desired state?" — belongs to a separate
+component (lojix today; whatever the cluster orchestrator becomes
+tomorrow). ClaviFaber answers requests like "set up this identity",
+"sign this cert", "write the publication". Each request is idempotent on
+disk-existence; sequencing them belongs to the caller.
+
+## Operator surface
+
+The CLI is **NOTA-only**: one positional NOTA record per invocation.
+Each request kind has exactly one variant in `ClaviFaberRequest` and
+prints exactly one variant of `ClaviFaberResponse` on stdout.
+
+Examples:
+
+```sh
+clavifaber '(IdentitySetup "/var/lib/clavifaber/identity")'
+clavifaber '(CertificateAuthorityIssuance ABC123 "Cluster CA" "/var/lib/clavifaber/ca.pem")'
+clavifaber '(YggdrasilKeypairSetup "/var/lib/clavifaber/yggdrasil/keypair.json")'
+clavifaber '(PublicKeyPublicationWriting probus "/var/lib/clavifaber/identity" \
+  (YggdrasilKeypairLocation "/var/lib/clavifaber/yggdrasil/keypair.json") \
+  None \
+  "/var/lib/clavifaber/publication.nota")'
+```
+
+The eight request kinds:
+
+| Request | What it does |
+|---|---|
+| `IdentitySetup` | Ensure SSH ed25519 host identity (key.pem + ssh.pub) under the named directory. Generate if missing; quarantine + replace if corrupt. |
+| `OpenSshPublicKeyDerivation` | Re-derive ssh.pub from the persisted private key. |
+| `CertificateAuthorityIssuance` | Sign a CA cert against a GPG keygrip; idempotent on output existence. |
+| `ServerCertificateIssuance` | Mint a P-256 server keypair and sign the cert against the CA; idempotent on output existence. |
+| `ClientCertificateIssuance` | Sign a client cert binding a host's SSH ed25519 public key; idempotent on output existence. |
+| `CertificateChainVerification` | Verify a cert chains to a CA: issuer-DN match + validity window + signature. |
+| `YggdrasilKeypairSetup` | Generate the per-host Yggdrasil keypair file (mode 0600); return the static `(YggdrasilProjection address public_key)`. |
+| `PublicKeyPublicationWriting` | Assemble and atomically write `publication.nota` with typed identity / yggdrasil / wifi-cert fields. |
 
 ## Runtime topology
 
-Every plane is owned by a Kameo actor. The runtime root spawns the five named
-actors and one optional trace recorder; CLI requests dispatch by sending typed
-messages to the appropriate actor.
+Five Kameo actors plus a test-only trace recorder.
 
 ```mermaid
 flowchart TB
-    cli["clavifaber CLI<br/>(clap + inline NOTA)"] --> request["ClaviFaberRequest<br/>(NotaSum)"]
+    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(NotaSum)"]
     request --> root["RuntimeRoot"]
-    root --> host_identity["HostIdentity<br/>(IdentityDirectory + NodeIdentity)"]
-    root --> ssh_host_key["SshHostKey<br/>(ssh.pub projection)"]
-    root --> publication_collector["PublicationCollector<br/>(PublicKeyPublication assembly)"]
-    root --> certificate_issuer["CertificateIssuer<br/>(CA / server / node / verify — generic X.509 machinery)"]
-    root --> wifi_certificate["WifiCertificate<br/>(wifi-PKI cert lifecycle: ensure + idempotent-skip + write)"]
+    root --> host_identity["HostIdentity<br/>(IdentityDirectory + NodeIdentity;<br/>EnsureIdentity / LoadIdentity / WritePublicKeyProjection)"]
+    root --> certificate_issuer["CertificateIssuer<br/>(CA / server / client / verify)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]
     root --> yggdrasil_key["YggdrasilKey<br/>(static yggdrasil keypair + projection via spawn_blocking + DelegatedReply)"]
     root -. test only .-> trace_recorder["TraceRecorder"]
 
-    publication_collector -->|LoadIdentity| host_identity
-    certificate_issuer -->|SignSha256Hash| gpg_agent_session
-    wifi_certificate -->|IssueServerCertificate / IssueNodeCertificate| certificate_issuer
+    certificate_issuer -->|SignSha256Hash, ReadEd25519PublicKey| gpg_agent_session
 ```
 
-The six request planes below each map to one or more actors. The actor noun
-owns the plane's state, accepts typed messages, and emits typed replies.
+**Why these actors and not others.**
 
-## Planes
+- **HostIdentity** owns the on-disk SSH host identity. State-bearing
+  across invocations of `EnsureIdentity` / `LoadIdentity`; failure-
+  recoverable (corrupt-key quarantine flow). Folds `WritePublicKeyProjection`
+  (formerly a separate `SshHostKey` actor): the projection is a
+  method on the noun that owns the private key.
+- **GpgAgentSession** is the blocking-IO anchor for gpg-agent. Crate-
+  private `gpg_agent` module reachable only from here (witness:
+  `tests/forbidden_edges.rs::only_gpg_agent_session_owns_the_gpg_agent_connection`).
+  `DelegatedReply` over `spawn_blocking` keeps the mailbox responsive.
+- **CertificateIssuer** is the X.509 minting plane. Bridges typed
+  signing requests to typed certificates by asking `GpgAgentSession`
+  via the signer-closure pattern.
+- **YggdrasilKey** is the blocking-IO anchor for the `yggdrasil`
+  binary (witness: `only_yggdrasil_key_owns_the_yggdrasil_binary`).
+  Mints the keypair file and statically derives the public projection.
+  Same `DelegatedReply` + `spawn_blocking` shape as `GpgAgentSession`.
+- **TraceRecorder** is test-only; production passes `None` as the
+  tracer. Tests pass an `ActorRef<TraceRecorder>` and assert on the
+  ordered event sequence.
 
-### Local Material
+**What's NOT an actor and why.**
 
-The local material plane owns private key creation and repair. Private key
-bytes must stay out of stdout, logs, reports, test fixtures, and the Nix
-store. The current implementation creates an Ed25519 node identity directory
-with:
-
-- `key.pem`: PKCS#8 private key, mode `0600`.
-- `ssh.pub`: OpenSSH public key projection, mode `0644`.
-
-The directory is mode `0700`. If the private key is corrupt, ClaviFaber moves
-it aside before generating replacement material. The broken material remains
-local for forensic inspection.
-
-**Actors**: `HostIdentity` owns the identity directory and node identity;
-accepts `EnsureIdentity` (load-or-generate-and-write) and `LoadIdentity`
-(read-only). `SshHostKey` owns the public-key projection file; accepts
-`WritePublicKeyProjection { directory, identity }`.
-
-### Public Projection
-
-The public projection plane turns private material into records other hosts
-can trust. Today this includes the OpenSSH public key, the Yggdrasil identity
-projection (hex public key + IPv6 address), and X.509 certificates for the
-CriomOS WiFi PKI path. The intended cluster bundle also includes any WiFi
-client certificate public metadata needed by the cluster database.
-
-This plane produces `PublicKeyPublication` records. Consumers must not poll
-arbitrary files looking for key changes; producers push a complete current
-public projection when material is created or repaired.
-
-**Actor**: `PublicationCollector` owns publication assembly; accepts
-`CollectPublication { node_name, directory, yggdrasil: Option<YggdrasilProjection>, wifi_* }`
-and returns `PublicKeyPublication`. Internally asks `HostIdentity` for the
-current node identity.
-
-### WiFi PKI
-
-The wifi-PKI plane owns the lifecycle of the EAP-TLS certs used to admit
-hosts onto the cluster's WiFi: an AP-side server cert and per-host client
-certs. The X.509 issuance machinery lives in `CertificateIssuer` (which
-asks `GpgAgentSession` for the GPG-Ed25519 signature). `WifiCertificate`
-sits above it as the wifi-named domain plane: it knows when each cert
-already exists on disk (idempotent-skip avoids the gpg-agent round-trip)
-and which paths the wifi-PKI uses.
-
-**Actor**: `WifiCertificate` accepts `EnsureWifiServerCertificate
-{ plan: WifiServerCertificatePlan }` and `EnsureWifiClientCertificate
-{ plan: WifiClientCertificatePlan }`. Both replies are
-`Result<(), Error>`. The handler returns immediately when the named
-output files already exist (no CA read, no gpg-agent ask); otherwise it
-loads the CA, asks `CertificateIssuer` for the typed signing request,
-and writes the result atomically (server cert+key with mode 0644/0600;
-client cert with mode 0644). The `Reply` is not `DelegatedReply` — the
-`ask` to `CertificateIssuer` is non-blocking from the runtime's
-perspective (the blocking gpg call is already wrapped in
-`spawn_blocking` inside `GpgAgentSession`).
-
-The CA itself is not wifi-shaped (a CA can sign anything), so the CA
-issuance plane stays in `Converge::run_actors` calling
-`CertificateIssuer.IssueCertificateAuthority` directly via the
-`converge_certificate_authority` helper.
-
-Rotation is parked: v1 has no renewal scheduler, no redb-persisted
-deadline, no `RenewBeforeExpiry` message. The keypair-and-cert
-lifecycle owner is named today so renewal lands on it later — same
-shape as `YggdrasilKey`.
-
-### Yggdrasil Identity
-
-The Yggdrasil identity plane owns the per-host Yggdrasil keypair file
-(mode 0600) and projects it to the public hex public key + IPv6 address that
-other hosts consume. The keypair file's on-disk shape is
-`{"PrivateKey": "<128 hex>"}` — the same shape CriomOS's
-`network/yggdrasil.nix` consumes via `preCriadJson` (it merges this file with
-the runtime network overlay before invoking yggdrasild).
-
-Public projection is derived **statically** by invoking
-`yggdrasil -useconffile <keypair_path> -publickey -address`. Clavifaber never
-starts the daemon. The keypair, once minted, is stable across re-converge
-calls — rotation is parked (renewal scheduler is a separate concern, not in
-the v1 plane).
-
-**Actor**: `YggdrasilKey` owns the keypair file and the static projection;
-accepts `EnsureYggdrasilIdentity { keypair_path }` (idempotent: writes the
-keypair atomically with mode 0600 if absent) and `ReadYggdrasilProjection
-{ keypair_path }` (returns `YggdrasilProjection { public_key, address }` by
-running yggdrasil statically). Both handlers use
-`tokio::task::spawn_blocking` + `DelegatedReply` so the actor's mailbox stays
-responsive while the subprocess runs. The `yggdrasil` binary is resolved from
-the process PATH (override with `CLAVIFABER_YGGDRASIL_BIN`); CriomOS's
-`complex-init` systemd service supplies it via `Path = [ pkgs.yggdrasil ]`.
-
-### Certificate Authority
-
-The certificate-authority plane bridges a GPG Ed25519 signing key into X.509
-certificates. It currently supports:
-
-- a self-signed CA certificate from a GPG keygrip,
-- a P-256 server key and certificate,
-- a node certificate from an Ed25519 OpenSSH public key,
-- issuer and signature verification against the CA certificate.
-
-Certificate construction lives in `src/x509.rs`'s data-bearing types
-(`CertificateAuthorityIssuer`, `UnsignedCertificate`,
-`CertificateAuthorityCertificateRequest`, `ServerCertificateSigningRequest`,
-`NodeCertificateSigningRequest`, `CertificateChain`). The issuer methods are
-**async** and take a signer closure parameter — the actor supplies a closure
-that asks `GpgAgentSession` for the signature, so x509 has no direct
-dependency on `gpg-agent`.
-
-**Actors**: `CertificateIssuer` accepts `IssueCertificateAuthority`,
-`IssueServerCertificate`, `IssueNodeCertificate`, `VerifyCertificateChain`.
-`GpgAgentSession` is the sole owner of `gpg-agent` connections; accepts
-`ReadEd25519PublicKey { keygrip }` and `SignSha256Hash { keygrip, hash_hex }`.
-The actor uses `tokio::task::spawn_blocking` + `DelegatedReply` so its
-mailbox stays responsive while the synchronous gpg-agent call runs.
-
-### Publication
-
-The publication plane emits a typed public-key publication record for the
-component that owns the cluster database. ClaviFaber does not mutate cluster
-state directly and does not learn ad hoc paths into unrelated repositories.
-ClaviFaber's contract ends at a complete public `PublicKeyPublication`
-record; the long-lived consumer that takes that record into the cluster
-database lives in a separate component.
-
-## Command Surface
-
-The current Clap command line exists for compatibility with the extracted
-prototype. The operator surface is a single Nota request argument with typed
-request and result records. No new flag/subcommand surface should be added
-unless it is explicitly a temporary compatibility bridge.
-
-Example:
-
-```sh
-clavifaber '(IdentityDirectoryInitialization "/var/lib/clavifaber")'
-clavifaber '(PublicKeyPublicationRequest probus "/var/lib/clavifaber" None None None)'
-```
-
-The CLI binary uses `#[tokio::main]`. Each request type's `execute()` method
-is `async` and dispatches through actors via the typed `Message<T>` impls
-above.
-
-## Convergence
-
-ClaviFaber is a **convergence runner**: a one-shot host service that brings
-the on-disk state in line with the desired state declared in the input
-NOTA `Converge` request, then exits. The actual state is the filesystem
-(key.pem, ssh.pub, certs, publication.nota); the desired state is the
-input. Convergence is bringing actual to match desired and stopping.
-
-A sema database (`clavifaber.redb`) holds a per-host **convergence
-ledger** — a single row keyed `"converge"` with the hash of the last
-successfully converged input. On startup the runner hashes the current
-input and compares to the ledger:
-
-- match → exit immediately with `work_performed = false` (the
-  "should I run?" gate);
-- mismatch → run the actor topology, write the new hash on success,
-  exit with `work_performed = true`.
-
-The gate makes idle activations cheap: clavifaber can fire on every
-lojix activation and exit in milliseconds when nothing's changed.
-
-The current convergence steps in order: ensure host identity → optionally
-issue CA cert → optionally issue server cert → for each node-cert plan,
-issue node cert → optionally ensure Yggdrasil keypair + read projection →
-assemble `PublicKeyPublication` → atomic write to `publication.nota`. The
-publication file is the haywire-stage cluster contract: an SSH-readable
-consumer pulls each host's `publication.nota` manually until the networked
-exchange protocol lands.
+- Per-request handlers (in `src/request.rs`): each request type's
+  `execute()` method orchestrates the actors needed for that request.
+  These are not actors — they're stateless dispatch glue. Each request
+  spins up a fresh `RuntimeRoot` (cheap; the per-request actors live
+  for the duration of one CLI invocation).
+- `AtomicFile` / `IdentityDirectory` / `YggdrasilKeypairFile` /
+  `CertificateDer` / `OpenSshPublicKey` / `Pem types`: data-bearing
+  types with sync methods. No mailbox semantics; used inside actor
+  handlers.
+- Inline-NOTA argv parser (`CommandLine` in `request.rs`): stateless
+  decoding from `argv` to `ClaviFaberRequest`.
 
 ## Constraints
 
-These are the load-bearing obligations clavifaber must satisfy. Each
-constraint reads as one short sentence and maps to a same-named witness
-test (or witness pattern) under `tests/`. Adding a constraint here without
-a witness is a smell — name the witness first or move the constraint to a
-report.
+Each load-bearing constraint reads as one short sentence and maps to a
+same-named witness test. Adding a constraint here without a witness is
+a smell — name the witness first or move the constraint to a report.
 
 ### Actor topology
 
@@ -222,100 +110,113 @@ report.
 | Every actor type carries data (no public ZST actor markers). | `tests/actor_topology.rs::actor_types_carry_data_not_zero_size` (mem::size_of for each actor > 0). |
 | The runtime root spawns every named actor. | `tests/actor_topology.rs::runtime_root_spawns_every_named_actor` (struct destructuring assertion). |
 | `HostIdentity` records receive + reply trace events on `EnsureIdentity`. | `tests/actor_trace.rs::ensure_identity_witness_records_host_identity_receive_and_reply`. |
-| `PublicKeyDerivation` flow runs `HostIdentity.LoadIdentity` before `SshHostKey.WritePublicKeyProjection`. | `tests/actor_trace.rs::public_key_derivation_runs_host_identity_then_ssh_host_key`. |
+| `OpenSshPublicKeyDerivation` flow runs `LoadIdentity` before `WritePublicKeyProjection` on the same actor. | `tests/actor_trace.rs::open_ssh_public_key_derivation_runs_load_identity_then_write_projection`. |
 | `YggdrasilKey` projection runs `EnsureYggdrasilIdentity` before `ReadYggdrasilProjection`. | `tests/actor_trace.rs::yggdrasil_projection_runs_ensure_then_read`. |
-| `WifiCertificate` is the sole owner of wifi-PKI cert issuance from the convergence path. | `tests/actor_trace.rs::wifi_certificate_records_server_certificate_request` and `wifi_certificate_records_client_certificate_request` (skip-path mailbox witnesses). |
-| `WifiCertificate` skips re-issuance when output files already exist (no CA read, no gpg-agent traffic). | `tests/converge.rs::converge_skips_wifi_certificate_issuance_when_files_already_exist` (Converge with bogus keygrip succeeds because the actor short-circuits on disk-existence). |
 | Only `gpg_agent_session.rs` reaches the `gpg_agent` module; other actors and request handlers must ask `GpgAgentSession` through its mailbox. | `tests/forbidden_edges.rs::only_gpg_agent_session_owns_the_gpg_agent_connection` (static source scan). The `gpg_agent` module is also crate-private (`mod gpg_agent` in `src/lib.rs`). |
-| Only `src/yggdrasil.rs` (data) and `src/actors/yggdrasil_key.rs` (actor) reach the yggdrasil binary; other actors and request handlers must ask `YggdrasilKey` through its mailbox. | `tests/forbidden_edges.rs::only_yggdrasil_key_owns_the_yggdrasil_binary` (static source scan for `"yggdrasil"` literal and `yggdrasil_binary` variable name). |
-| `GpgAgentSession`'s mailbox stays responsive during gpg-agent IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each gpg call (see `src/actors/gpg_agent_session.rs`). Future runtime witness needs an injectable signer. |
-| `YggdrasilKey`'s mailbox stays responsive during yggdrasil-binary IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each yggdrasil invocation (see `src/actors/yggdrasil_key.rs`). |
+| Only `src/yggdrasil.rs` (data) and `src/actors/yggdrasil_key.rs` (actor) reach the yggdrasil binary; other actors and request handlers must ask `YggdrasilKey` through its mailbox. | `tests/forbidden_edges.rs::only_yggdrasil_key_owns_the_yggdrasil_binary`. |
+| `GpgAgentSession`'s mailbox stays responsive during gpg-agent IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each gpg call. |
+| `YggdrasilKey`'s mailbox stays responsive during yggdrasil-binary IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each yggdrasil invocation. |
 
-### Convergence
+### Per-handler idempotency
 
 | Constraint | Witness |
 |---|---|
-| Convergence skips actor work when the input hash matches the last-converged hash in sema. | `tests/converge.rs::converge_skips_when_input_hash_matches_last_converged` (deletes publication.nota between runs and asserts the second run does not re-create it). |
-| Changing any field of the input plan triggers re-convergence. | `tests/converge.rs::converge_re_runs_when_input_changes` (mutates `node_name` between runs and asserts the publication content changes). |
-| Re-converging with byte-identical input produces a byte-identical publication on disk. | `tests/converge.rs::converge_is_idempotent_against_existing_identity`. |
-| `clavifaber.redb` is durable across process invocations and readable by the authoritative sema reader. | Chained Nix derivations: `checks.state-write` runs `Converge` and emits `clavifaber.redb` as `$out`; `checks.state-read` invokes `(InspectState …)` against that file and asserts a `ConvergeLedger` row was committed. |
-| The sema schema-version guard hard-fails on mismatch. | `tests/state_schema.rs::sema_open_with_wrong_schema_version_hard_fails` (writes a redb with a different schema header, asserts open errors). |
+| `IdentitySetup` is idempotent: re-running preserves the on-disk private key. | `tests/identity_directory_lifecycle.rs::identity_setup_preserves_existing_identity`. |
+| `IdentitySetup` quarantines a corrupt private key before regeneration. | `tests/identity_directory_lifecycle.rs::identity_setup_quarantines_corrupt_private_key_before_replacement`. |
+| `OpenSshPublicKeyDerivation` re-derives the public projection from the persisted private key. | `tests/identity_directory_lifecycle.rs::open_ssh_public_key_derivation_restores_public_projection_from_private_key`. |
+| `OpenSshPublicKeyDerivation` fails when no private key is present. | `tests/identity_directory_lifecycle.rs::open_ssh_public_key_derivation_fails_when_private_key_is_absent`. |
+| `CertificateAuthorityIssuance` skips when the output file already exists (no CA read, no gpg-agent traffic). | `tests/issuance_idempotency.rs::certificate_authority_issuance_skips_when_output_exists` (bogus keygrip succeeds via skip path). |
+| `ServerCertificateIssuance` skips when both output files exist. | `tests/issuance_idempotency.rs::server_certificate_issuance_skips_when_output_files_exist`. |
+| `ClientCertificateIssuance` skips when the output file exists. | `tests/issuance_idempotency.rs::client_certificate_issuance_skips_when_output_exists`. |
+| `YggdrasilKeypairSetup` is idempotent: re-running preserves the keypair file. | `scripts/test-pki-lifecycle` Phase 8 (compares keypair bytes before / after re-run). |
+
+### Certificate validity
+
+| Constraint | Witness |
+|---|---|
+| `CertificateChainVerification` rejects a certificate whose `not_after` is before the current clock. | `tests/certificate_validity_window.rs::verify_rejects_certificate_whose_not_after_is_before_clock`. |
+| `CertificateChainVerification` rejects a certificate whose `not_before` is after the current clock. | `tests/certificate_validity_window.rs::verify_rejects_certificate_whose_not_before_is_after_clock`. |
+| `CertificateChainVerification` runs the signature check after the validity check (so a cert in-window with a bogus signature reports the signature failure, not a validity failure). | `tests/certificate_validity_window.rs::verify_within_window_runs_signature_check_after_validity`. |
 
 ### Filesystem hygiene
 
 | Constraint | Witness |
 |---|---|
-| The identity directory is mode 0700; `key.pem` is 0600; `ssh.pub` is 0644. | `tests/identity_directory_lifecycle.rs::complex_init_creates_private_key_public_key_and_public_stdout_projection` and `…leaves_stable_modes_and_no_temporary_files`. |
-| `publication.nota` is written with mode 0644 (publicly readable). | `tests/converge.rs::converge_writes_publication_with_644_mode`. |
-| `clavifaber.redb` is created with mode 0600 (private to the service user). | `tests/converge.rs::converge_creates_state_database_with_600_mode`. |
-| The Yggdrasil keypair file is written with mode 0600 (private host material). | `tests/converge.rs::converge_with_yggdrasil_plan_populates_publication_and_keypair_file`. |
-| The Yggdrasil keypair is stable across re-converge (no silent rotation). | `tests/converge.rs::converge_with_yggdrasil_plan_is_idempotent_on_keypair`. |
-| All file writes go through `AtomicFile` (write-then-rename); no partial files visible mid-write. | Source scan: `tests/forbidden_edges.rs::all_file_writes_go_through_atomic_file` (no `fs::write` / `File::create` outside `util.rs`). |
-| A corrupt private key is preserved (renamed to `key.pem.broken.<timestamp>`) before regeneration. | `tests/identity_directory_lifecycle.rs::complex_init_quarantines_corrupt_private_key_before_replacement`. |
+| The identity directory is mode 0700; `key.pem` is 0600; `ssh.pub` is 0644. | `tests/identity_directory_lifecycle.rs::identity_setup_creates_private_key_and_public_key_with_stable_modes` and `…leaves_stable_modes_and_no_temporary_files`. |
+| `publication.nota` is written with mode 0644 (publicly readable). | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically`. |
+| The Yggdrasil keypair file is written with mode 0600 (private host material). | `scripts/test-pki-lifecycle` Phase 8 (asserts `stat -c %a` is 600). |
+| All file writes go through `AtomicFile` (write-then-rename); no partial files visible mid-write. | `tests/forbidden_edges.rs::all_file_writes_go_through_atomic_file` (no `fs::write` / `File::create` outside `util.rs`). |
 
-### Private bytes never leak
+### Public projection contract
 
 | Constraint | Witness |
 |---|---|
-| Private key bytes (PKCS#8 PEM) never appear in the binary's stdout. | `tests/converge.rs::converge_does_not_emit_private_key_bytes_on_stdout`. |
-| Private key bytes never appear in the binary's stderr. | Same test asserts on stderr too. |
-| Private key bytes never appear in any NOTA response value. | Source-shape claim — no response variant carries private material; reinforced by the stdout/stderr witness above. |
-| Yggdrasil private key bytes never leak — only the hex public key and IPv6 address reach the publication. | Source-shape claim: `YggdrasilProjection` carries only `public_key` + `address`; `CollectPublication` projects only those into `PublicKeyPublication`. The keypair file (mode 0600) is the only durable carrier of the private bytes. |
+| `publication.nota` carries a typed `YggdrasilProjection` record (not separate opaque strings). | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically` (asserts the publication contains a typed `YggdrasilProjection` with `address` + `public_key` fields). |
+| `publication.nota` carries a typed `WifiClientCertificate` record (not an opaque PEM string field). | Same test asserts on the typed `WifiClientCertificate { pem }` wrapper. |
+| `PublicKeyPublicationWriting` omits the typed planes when the caller passes `None`. | `tests/publication_writing.rs::public_key_publication_writing_omits_optional_planes_when_none`. |
+| Private key bytes (PKCS#8 PEM, GPG-managed CA private key, Yggdrasil private key, server private key) never appear on stdout or stderr. | Source-shape claim — no response variant carries private material; reinforced by the per-handler tests not finding `BEGIN PRIVATE KEY` markers in stdout. |
 
-## Test Contract
+## Test contract
 
-Pure Rust tests run through `nix flake check`:
+| Surface | Where |
+|---|---|
+| Pure Rust tests | `tests/*.rs`, run via `cargo test --all-targets` or `nix flake check` (4 derivations: build, test, fmt, clippy). |
+| Impure end-to-end against real gpg-agent + yggdrasil | `nix run .#test-pki-lifecycle` (8 phases). |
 
-- `tests/identity_directory_lifecycle.rs`: identity directory permissions,
-  public-key derivation, corruption recovery, idempotent re-init.
-- `tests/request_surface.rs`: NOTA request/response round-trip,
-  inline-NOTA CLI dispatch.
-- `tests/actor_topology.rs`: actor data-carrying + runtime root spawn.
-- `tests/actor_trace.rs`: trace-pattern witnesses.
-- `tests/forbidden_edges.rs`: GpgAgentSession encapsulation, AtomicFile
-  enforcement.
-- `tests/converge.rs`: end-to-end convergence flow including the
-  sema-backed gate, cert-plan NOTA round-trip, mode-bit witnesses, and
-  the no-private-bytes-on-stdout witness.
-- `tests/state_schema.rs`: sema schema-version guard.
-
-Two chained Nix derivations as `checks.state-write` and `checks.state-read`
-witness state durability across separate processes (skills/architectural-truth-tests.md
-§"Nix-chained tests").
-
-The GPG/gpg-agent lifecycle is an impure integration test exposed as:
-
-```sh
-nix run .#test-pki-lifecycle
-```
-
-Tests should be named by their behavioral premise and should use fixture
-nouns instead of inline command plumbing.
+Run both before commit; commit only when both are green.
 
 ## Code map
 
 ```
 src/
-├── lib.rs                 — module declarations + re-exports
-├── main.rs                — CLI entry point (#[tokio::main])
-├── error.rs               — crate Error enum
-├── identity.rs            — IdentityDirectory + NodeIdentity (data-bearing)
-├── publication.rs         — PublicKeyPublication + PublicKeyPublicationRequest
-├── ssh_key.rs             — OpenSshPublicKey
-├── yggdrasil.rs           — YggdrasilKeypairFile + YggdrasilPlan + YggdrasilProjection
-├── x509.rs                — Cert types + async issuer methods (signer closure)
-├── util.rs                — AtomicFile, AssuanLine
-├── gpg_agent.rs           — Assuan client (crate-private; only gpg_agent_session reaches it)
-├── request.rs             — ClaviFaberRequest dispatch (async, routes through actors)
+├── lib.rs                  — module declarations
+├── main.rs                 — #[tokio::main] CLI entry; one NOTA record in, one NOTA record out
+├── error.rs                — Error enum (thiserror)
+├── identity.rs             — IdentityDirectory + NodeIdentity (data)
+├── publication.rs          — PublicKeyPublication + WifiClientCertificate (typed publication record)
+├── ssh_key.rs              — OpenSshPublicKey (data)
+├── yggdrasil.rs            — YggdrasilKeypairFile + YggdrasilProjection (data + serde_json field extraction)
+├── x509.rs                 — Cert types + async issuer methods (signer closure) + CertificateChain validity-window check
+├── util.rs                 — AtomicFile, AssuanLine (utilities)
+├── gpg_agent.rs            — Assuan client (crate-private)
+├── request.rs              — ClaviFaberRequest enum (8 variants), each handler's execute()
 └── actors/
     ├── (mod via src/actors.rs)
-    ├── runtime_root.rs    — RuntimeRoot owns every actor's ActorRef
-    ├── host_identity.rs   — HostIdentity actor + EnsureIdentity / LoadIdentity messages
-    ├── ssh_host_key.rs    — SshHostKey actor + WritePublicKeyProjection message
+    ├── runtime_root.rs     — RuntimeRoot owns every actor's ActorRef
+    ├── host_identity.rs    — HostIdentity actor + EnsureIdentity / LoadIdentity / WritePublicKeyProjection
     ├── gpg_agent_session.rs — GpgAgentSession actor + ReadEd25519PublicKey / SignSha256Hash (DelegatedReply over spawn_blocking)
-    ├── yggdrasil_key.rs   — YggdrasilKey actor + EnsureYggdrasilIdentity / ReadYggdrasilProjection (DelegatedReply over spawn_blocking)
+    ├── yggdrasil_key.rs    — YggdrasilKey actor + EnsureYggdrasilIdentity / ReadYggdrasilProjection (DelegatedReply over spawn_blocking)
     ├── certificate_issuer.rs — CertificateIssuer actor + Issue* / Verify* messages (signer closure asks GpgAgentSession)
-    ├── wifi_certificate.rs — WifiCertificate actor + EnsureWifiServerCertificate / EnsureWifiClientCertificate (idempotent skip on disk existence; routes to CertificateIssuer)
-    ├── publication_collector.rs — PublicationCollector actor + CollectPublication (asks HostIdentity)
-    └── trace_recorder.rs  — TraceRecorder actor (test-time tracing; production passes None)
+    └── trace_recorder.rs   — TraceRecorder actor (test-time only; production passes None)
+
+tests/
+├── actor_topology.rs            — actor types carry data; runtime root spawns all 5
+├── actor_trace.rs               — receive/reply trace witnesses
+├── forbidden_edges.rs           — gpg_agent + AtomicFile + yggdrasil ownership scans
+├── identity_directory_lifecycle.rs — identity setup, quarantine, derivation, mode bits
+├── issuance_idempotency.rs      — CA / server / client cert handlers skip when output files exist
+├── certificate_validity_window.rs — verify rejects expired / not-yet-valid certs (primary-4kr witness)
+├── publication_writing.rs       — typed YggdrasilProjection + WifiClientCertificate in publication.nota
+└── request_surface.rs           — NOTA round-trip + inline-NOTA CLI dispatch
+
+scripts/
+└── test-pki-lifecycle           — impure 8-phase end-to-end (real gpg-agent + real yggdrasil)
 ```
+
+24 cargo tests + 4 nix flake checks + 8 pki-lifecycle phases.
+
+## What clavifaber does NOT do
+
+- **Convergence orchestration.** Deciding "should I run?" or "is the
+  system in the desired state?" belongs to an orchestrator component
+  (lojix today; future cluster orchestrator). Each clavifaber request
+  is one focused operation; the caller sequences them.
+- **Cluster-side consumers.** The `publication.nota` file is written
+  to a public-readable path (mode 0644). Whoever reads and aggregates
+  these across hosts is a separate component (the haywire stage today
+  is "an SSH user pulls each host's file").
+- **Rotation / renewal.** No timer-driven cert renewal; no SSH key
+  rotation; no Yggdrasil keypair rotation. The actors that own each
+  plane are the obvious owners for rotation when that work lands.
+- **State persistence beyond filesystem.** Each invocation reads and
+  writes files directly. No sema, no redb, no daemon-side state.

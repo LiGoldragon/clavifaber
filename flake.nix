@@ -102,25 +102,6 @@
         system:
         let
           context = mkContext system;
-          clavifaber = self.packages.${system}.default;
-          stateWrite = context.pkgs.runCommand "clavifaber-state-write" { } ''
-            mkdir -p $out
-            export HOME=$TMPDIR/home
-            mkdir -p $HOME
-            ${clavifaber}/bin/clavifaber "(Converge \"$out/identity\" probus \"$out/publication.nota\" None None \"$out/clavifaber.redb\" None None [])" > $out/converge_reply.nota
-            test -f "$out/clavifaber.redb" || (echo "writer did not create clavifaber.redb"; exit 1)
-            test -f "$out/publication.nota" || (echo "writer did not write publication.nota"; exit 1)
-            grep -q 'true' "$out/converge_reply.nota" || (echo "writer did not record work_performed = true"; cat "$out/converge_reply.nota"; exit 1)
-          '';
-          stateRead = context.pkgs.runCommand "clavifaber-state-read" { } ''
-            cp ${stateWrite}/clavifaber.redb $TMPDIR/clavifaber.redb
-            chmod u+w $TMPDIR/clavifaber.redb
-            ${clavifaber}/bin/clavifaber "(InspectState \"$TMPDIR/clavifaber.redb\")" > $TMPDIR/inspect_reply.nota
-            cat $TMPDIR/inspect_reply.nota
-            grep -q 'StateReport' $TMPDIR/inspect_reply.nota || (echo "reader did not get StateReport"; exit 1)
-            grep -q 'ConvergeLedger' $TMPDIR/inspect_reply.nota || (echo "reader did not surface a convergence ledger entry"; exit 1)
-            touch $out
-          '';
         in
         {
           build = context.craneLib.cargoBuild (
@@ -145,8 +126,6 @@
               cargoClippyExtraArgs = "--all-targets -- -D warnings";
             }
           );
-          state-write = stateWrite;
-          state-read = stateRead;
         }
       );
 

@@ -17,7 +17,6 @@ name = "clavifaber"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
 der = { version = "0.7", features = ["alloc", "derive", "oid", "pem"] }
 x509-cert = { version = "0.2", features = ["pem"] }
 spki = { version = "0.7", features = ["alloc", "pem"] }
@@ -34,12 +33,10 @@ thiserror = "2"
 nota-codec = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
 kameo = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
-sema = { git = "https://github.com/LiGoldragon/sema.git", branch = "main" }
-rkyv = { version = "0.8", default-features = false, features = ["alloc", "bytecheck"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
-redb = "4"
 
 [lints.rust]
 unsafe_code = "forbid"

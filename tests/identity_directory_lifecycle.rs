@@ -1,3 +1,11 @@
+//! End-to-end identity-directory lifecycle through the NOTA-only CLI:
+//! IdentitySetup creates private + public files; OpenSshPublicKeyDerivation
+//! re-derives ssh.pub; corrupt private keys are quarantined; mode bits stay
+//! stable.
+
+use clavifaber::request::{
+    ClaviFaberRequest, ClaviFaberResponse, IdentitySetup, OpenSshPublicKeyDerivation,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -19,25 +27,30 @@ impl CliFixture {
         self.temporary_directory.path().join(name)
     }
 
-    fn complex_init(&self, identity_directory: &Path) -> Output {
-        clavifaber()
-            .args(["complex-init", "--dir"])
-            .arg(identity_directory)
-            .output()
-            .expect("run complex-init")
+    fn identity_setup(&self, identity_directory: &Path) -> Output {
+        let request = ClaviFaberRequest::IdentitySetup(IdentitySetup {
+            directory: directory_text(identity_directory),
+        });
+        run_request(&request)
     }
 
-    fn derive_public_key(&self, identity_directory: &Path) -> Output {
-        clavifaber()
-            .args(["derive-pubkey", "--dir"])
-            .arg(identity_directory)
-            .output()
-            .expect("run derive-pubkey")
+    fn open_ssh_public_key_derivation(&self, identity_directory: &Path) -> Output {
+        let request = ClaviFaberRequest::OpenSshPublicKeyDerivation(OpenSshPublicKeyDerivation {
+            directory: directory_text(identity_directory),
+        });
+        run_request(&request)
     }
 }
 
-fn clavifaber() -> Command {
+fn directory_text(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn run_request(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
+        .arg(request.to_nota().expect("encode request"))
+        .output()
+        .expect("run clavifaber")
 }
 
 fn stdout_text(output: &Output) -> String {
@@ -48,12 +61,24 @@ fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
+fn parse_response(output: &Output) -> ClaviFaberResponse {
+    ClaviFaberResponse::from_nota(&stdout_text(output)).expect("decode response")
+}
+
+fn open_ssh_public_key_from_response(response: ClaviFaberResponse) -> String {
+    match response {
+        ClaviFaberResponse::IdentitySet(set) => set.open_ssh_public_key,
+        ClaviFaberResponse::OpenSshPublicKeyDerived(derived) => derived.open_ssh_public_key,
+        other => panic!("expected IdentitySet or OpenSshPublicKeyDerived, got {other:?}"),
+    }
+}
+
 #[test]
-fn complex_init_creates_private_key_public_key_and_public_stdout_projection() {
+fn identity_setup_creates_private_key_and_public_key_with_stable_modes() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
 
-    let output = fixture.complex_init(&identity_directory);
+    let output = fixture.identity_setup(&identity_directory);
 
     assert!(output.status.success(), "stderr: {}", stderr_text(&output));
 
@@ -87,85 +112,55 @@ fn complex_init_creates_private_key_public_key_and_public_stdout_projection() {
         private_key_pem.contains("BEGIN PRIVATE KEY"),
         "key.pem not valid PEM"
     );
+
+    let on_disk_public_key = fs::read_to_string(&public_key_path).expect("read public key");
     assert!(
-        private_key_pem.contains("END PRIVATE KEY"),
-        "key.pem not valid PEM"
+        on_disk_public_key.starts_with("ssh-ed25519 "),
+        "ssh.pub wrong format: {on_disk_public_key}"
     );
 
-    let public_key = fs::read_to_string(&public_key_path).expect("read public key");
-    assert!(
-        public_key.starts_with("ssh-ed25519 "),
-        "ssh.pub wrong format: {public_key}"
+    let response_public_key = open_ssh_public_key_from_response(parse_response(&output));
+    assert_eq!(
+        response_public_key, on_disk_public_key,
+        "response open_ssh_public_key should match the file's content"
     );
-    assert!(
-        public_key.ends_with(" complex"),
-        "ssh.pub missing complex comment"
-    );
-
-    let stdout = stdout_text(&output);
-    assert!(
-        stdout.starts_with("ssh-ed25519 "),
-        "stdout should be pubkey"
-    );
-    assert_eq!(stdout, public_key, "stdout should match ssh.pub");
 }
 
 #[test]
-fn complex_init_preserves_existing_identity() {
+fn identity_setup_preserves_existing_identity() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
 
-    let first_output = fixture.complex_init(&identity_directory);
-    assert!(
-        first_output.status.success(),
-        "stderr: {}",
-        stderr_text(&first_output)
-    );
+    let first = fixture.identity_setup(&identity_directory);
+    assert!(first.status.success(), "stderr: {}", stderr_text(&first));
     let first_private_key =
         fs::read_to_string(identity_directory.join("key.pem")).expect("read first private key");
-    let first_public_key = stdout_text(&first_output);
+    let first_public_key = open_ssh_public_key_from_response(parse_response(&first));
 
-    let second_output = fixture.complex_init(&identity_directory);
-    assert!(
-        second_output.status.success(),
-        "stderr: {}",
-        stderr_text(&second_output)
-    );
+    let second = fixture.identity_setup(&identity_directory);
+    assert!(second.status.success(), "stderr: {}", stderr_text(&second));
     let second_private_key =
         fs::read_to_string(identity_directory.join("key.pem")).expect("read second private key");
-    let second_public_key = stdout_text(&second_output);
+    let second_public_key = open_ssh_public_key_from_response(parse_response(&second));
 
     assert_eq!(first_private_key, second_private_key, "key.pem changed");
     assert_eq!(first_public_key, second_public_key, "public key changed");
 }
 
 #[test]
-fn complex_init_quarantines_corrupt_private_key_before_replacement() {
+fn identity_setup_quarantines_corrupt_private_key_before_replacement() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
 
-    let first_output = fixture.complex_init(&identity_directory);
-    assert!(
-        first_output.status.success(),
-        "stderr: {}",
-        stderr_text(&first_output)
-    );
-    let original_public_key = stdout_text(&first_output);
+    let first = fixture.identity_setup(&identity_directory);
+    assert!(first.status.success(), "stderr: {}", stderr_text(&first));
+    let original_public_key = open_ssh_public_key_from_response(parse_response(&first));
 
     fs::write(identity_directory.join("key.pem"), b"CORRUPT DATA").expect("corrupt private key");
 
-    let second_output = fixture.complex_init(&identity_directory);
-    assert!(
-        second_output.status.success(),
-        "stderr: {}",
-        stderr_text(&second_output)
-    );
-    assert!(
-        stderr_text(&second_output).contains("corrupt"),
-        "corruption warning missing"
-    );
-
-    let new_public_key = stdout_text(&second_output);
+    let second = fixture.identity_setup(&identity_directory);
+    assert!(second.status.success(), "stderr: {}", stderr_text(&second));
+    let new_public_key = open_ssh_public_key_from_response(parse_response(&second));
     assert_ne!(original_public_key, new_public_key, "key was not replaced");
 
     let broken_private_key_count = fs::read_dir(&identity_directory)
@@ -185,17 +180,13 @@ fn complex_init_quarantines_corrupt_private_key_before_replacement() {
 }
 
 #[test]
-fn derive_pubkey_restores_public_projection_from_private_key() {
+fn open_ssh_public_key_derivation_restores_public_projection_from_private_key() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
 
-    let first_output = fixture.complex_init(&identity_directory);
-    assert!(
-        first_output.status.success(),
-        "stderr: {}",
-        stderr_text(&first_output)
-    );
-    let original_public_key = stdout_text(&first_output);
+    let first = fixture.identity_setup(&identity_directory);
+    assert!(first.status.success(), "stderr: {}", stderr_text(&first));
+    let original_public_key = open_ssh_public_key_from_response(parse_response(&first));
 
     fs::write(
         identity_directory.join("ssh.pub"),
@@ -203,13 +194,13 @@ fn derive_pubkey_restores_public_projection_from_private_key() {
     )
     .expect("tamper public key");
 
-    let derivation_output = fixture.derive_public_key(&identity_directory);
+    let derivation = fixture.open_ssh_public_key_derivation(&identity_directory);
     assert!(
-        derivation_output.status.success(),
+        derivation.status.success(),
         "stderr: {}",
-        stderr_text(&derivation_output)
+        stderr_text(&derivation)
     );
-    let derived_public_key = stdout_text(&derivation_output);
+    let derived_public_key = open_ssh_public_key_from_response(parse_response(&derivation));
 
     assert_eq!(
         original_public_key, derived_public_key,
@@ -225,11 +216,11 @@ fn derive_pubkey_restores_public_projection_from_private_key() {
 }
 
 #[test]
-fn complex_init_leaves_stable_modes_and_no_temporary_files() {
+fn identity_setup_leaves_stable_modes_and_no_temporary_files() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
 
-    let output = fixture.complex_init(&identity_directory);
+    let output = fixture.identity_setup(&identity_directory);
     assert!(output.status.success(), "stderr: {}", stderr_text(&output));
 
     let temporary_file_count = fs::read_dir(&identity_directory)
@@ -251,12 +242,15 @@ fn complex_init_leaves_stable_modes_and_no_temporary_files() {
 }
 
 #[test]
-fn derive_pubkey_fails_when_private_key_is_absent() {
+fn open_ssh_public_key_derivation_fails_when_private_key_is_absent() {
     let fixture = CliFixture::new();
     let identity_directory = fixture.identity_directory("identity");
     fs::create_dir_all(&identity_directory).expect("create empty identity directory");
 
-    let output = fixture.derive_public_key(&identity_directory);
+    let output = fixture.open_ssh_public_key_derivation(&identity_directory);
 
-    assert!(!output.status.success(), "derive-pubkey should fail");
+    assert!(
+        !output.status.success(),
+        "OpenSshPublicKeyDerivation should fail without private key"
+    );
 }

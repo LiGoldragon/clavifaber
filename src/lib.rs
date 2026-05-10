@@ -5,7 +5,6 @@ pub mod identity;
 pub mod publication;
 pub mod request;
 pub mod ssh_key;
-pub mod state;
 pub mod util;
 pub mod x509;
 pub mod yggdrasil;
