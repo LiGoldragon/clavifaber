@@ -3,6 +3,7 @@ use clavifaber::request::{
     CertificateAuthorityPlan, ClaviFaberRequest, ClaviFaberResponse, Converge, ConvergenceComplete,
     NodeCertificatePlan, ServerCertificatePlan,
 };
+use clavifaber::yggdrasil::YggdrasilPlan;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -30,18 +31,32 @@ impl ConvergeFixture {
         self.temporary_directory.path().join("clavifaber.redb")
     }
 
+    fn yggdrasil_keypair(&self) -> PathBuf {
+        self.temporary_directory
+            .path()
+            .join("yggdrasil/keypair.json")
+    }
+
     fn converge_request(&self) -> Converge {
         Converge {
             identity_directory: directory_text(&self.identity_directory()),
             node_name: "probus".to_string(),
             publication_output: directory_text(&self.publication_output()),
-            yggdrasil_address: Some("200:0:0:0:0:0:0:1".to_string()),
-            yggdrasil_public_key: Some("ed25519:abc".to_string()),
+            yggdrasil: None,
             wifi_client_certificate_pem: None,
             state_database: directory_text(&self.state_database()),
             certificate_authority: None,
             server_certificate: None,
             node_certificates: Vec::new(),
+        }
+    }
+
+    fn converge_request_with_yggdrasil(&self) -> Converge {
+        Converge {
+            yggdrasil: Some(YggdrasilPlan {
+                keypair_path: directory_text(&self.yggdrasil_keypair()),
+            }),
+            ..self.converge_request()
         }
     }
 
@@ -71,6 +86,12 @@ fn convergence_reply(output: &Output) -> ConvergenceComplete {
         panic!("expected ConvergenceComplete, got: {response:?}");
     };
     complete
+}
+
+fn decode_publication(text: &str) -> PublicKeyPublication {
+    use nota_codec::{Decoder, NotaDecode};
+    let mut decoder = Decoder::new(text);
+    PublicKeyPublication::decode(&mut decoder).expect("decode publication.nota")
 }
 
 #[test]
@@ -111,11 +132,8 @@ fn converge_creates_identity_then_writes_publication_atomically() {
         "publication's open_ssh_public_key wrong shape: {}",
         parsed.open_ssh_public_key
     );
-    assert_eq!(
-        parsed.yggdrasil_address.as_deref(),
-        Some("200:0:0:0:0:0:0:1")
-    );
-    assert_eq!(parsed.yggdrasil_public_key.as_deref(), Some("ed25519:abc"));
+    assert_eq!(parsed.yggdrasil_address, None);
+    assert_eq!(parsed.yggdrasil_public_key, None);
     assert_eq!(parsed.wifi_client_certificate_pem, None);
 }
 
@@ -225,12 +243,6 @@ fn converge_re_runs_when_input_changes() {
     assert_eq!(parsed.node_name, "rigil");
 }
 
-fn decode_publication(text: &str) -> PublicKeyPublication {
-    use nota_codec::{Decoder, NotaDecode};
-    let mut decoder = Decoder::new(text);
-    PublicKeyPublication::decode(&mut decoder).expect("decode publication.nota")
-}
-
 #[test]
 fn converge_writes_publication_with_644_mode() {
     use std::os::unix::fs::PermissionsExt;
@@ -296,8 +308,9 @@ fn converge_round_trips_with_full_certificate_plan() {
         identity_directory: "/var/lib/clavifaber/identity".to_string(),
         node_name: "probus".to_string(),
         publication_output: "/var/lib/clavifaber/publication.nota".to_string(),
-        yggdrasil_address: None,
-        yggdrasil_public_key: None,
+        yggdrasil: Some(YggdrasilPlan {
+            keypair_path: "/var/lib/clavifaber/yggdrasil/keypair.json".to_string(),
+        }),
         wifi_client_certificate_pem: None,
         state_database: "/var/lib/clavifaber/clavifaber.redb".to_string(),
         certificate_authority: Some(CertificateAuthorityPlan {
@@ -324,4 +337,102 @@ fn converge_round_trips_with_full_certificate_plan() {
     let encoded = request.to_nota().expect("encode converge with cert plan");
     let decoded = ClaviFaberRequest::from_nota(&encoded).expect("decode converge with cert plan");
     assert_eq!(decoded, request, "round-trip lost fields: {encoded}");
+}
+
+#[test]
+fn converge_with_yggdrasil_plan_populates_publication_and_keypair_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request_with_yggdrasil());
+
+    let output = fixture.run_converge(&request);
+    assert!(
+        output.status.success(),
+        "converge with yggdrasil failed; stderr: {}",
+        stderr_text(&output)
+    );
+
+    let keypair_path = fixture.yggdrasil_keypair();
+    assert!(
+        keypair_path.exists(),
+        "yggdrasil keypair file missing at {keypair_path:?}"
+    );
+    let mode = std::fs::metadata(&keypair_path)
+        .expect("keypair metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "yggdrasil keypair must be mode 0600 (private material), got {mode:o}"
+    );
+    let keypair_text = std::fs::read_to_string(&keypair_path).expect("read keypair file");
+    assert!(
+        keypair_text.contains("\"PrivateKey\""),
+        "keypair file missing PrivateKey field: {keypair_text}"
+    );
+
+    let publication_text =
+        std::fs::read_to_string(fixture.publication_output()).expect("read publication.nota");
+    let parsed = decode_publication(&publication_text);
+    let address = parsed
+        .yggdrasil_address
+        .as_deref()
+        .expect("publication missing yggdrasil_address");
+    let public_key = parsed
+        .yggdrasil_public_key
+        .as_deref()
+        .expect("publication missing yggdrasil_public_key");
+    assert!(
+        address.starts_with("200:")
+            || address.starts_with("201:")
+            || address.starts_with("202:")
+            || address.starts_with("203:")
+            || address.starts_with("204:")
+            || address.starts_with("205:")
+            || address.starts_with("206:")
+            || address.starts_with("207:")
+            || address.starts_with("300:"),
+        "yggdrasil_address should be in 200::/7 range, got {address}"
+    );
+    assert_eq!(
+        public_key.len(),
+        64,
+        "yggdrasil_public_key should be 64 hex chars (32-byte Ed25519), got {} chars: {public_key}",
+        public_key.len()
+    );
+    assert!(
+        public_key.chars().all(|c| c.is_ascii_hexdigit()),
+        "yggdrasil_public_key should be hex, got {public_key}"
+    );
+}
+
+#[test]
+fn converge_with_yggdrasil_plan_is_idempotent_on_keypair() {
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request_with_yggdrasil());
+
+    let first = fixture.run_converge(&request);
+    assert!(
+        first.status.success(),
+        "first converge: {}",
+        stderr_text(&first)
+    );
+    let first_keypair =
+        std::fs::read_to_string(fixture.yggdrasil_keypair()).expect("read first keypair");
+
+    let second = fixture.run_converge(&request);
+    assert!(
+        second.status.success(),
+        "second converge: {}",
+        stderr_text(&second)
+    );
+    let second_keypair =
+        std::fs::read_to_string(fixture.yggdrasil_keypair()).expect("read second keypair");
+
+    assert_eq!(
+        first_keypair, second_keypair,
+        "yggdrasil keypair must not change on re-converge — that would rotate the host's identity"
+    );
 }

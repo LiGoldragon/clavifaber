@@ -98,8 +98,7 @@ fn inline_nota_publication_request_returns_cluster_ready_public_record() {
         ClaviFaberRequest::PublicKeyPublicationRequest(PublicKeyPublicationRequest {
             node_name: "probus".to_string(),
             directory: directory_text(&identity_directory),
-            yggdrasil_address: Some("200:1111:2222:3333:4444:5555:6666:7777".to_string()),
-            yggdrasil_public_key: Some("abcdef0123456789".to_string()),
+            yggdrasil: None,
             wifi_client_certificate_pem: None,
         });
 
@@ -115,13 +114,7 @@ fn inline_nota_publication_request_returns_cluster_ready_public_record() {
         publication.open_ssh_public_key.starts_with("ssh-ed25519 "),
         "publication should carry OpenSSH public key"
     );
-    assert_eq!(
-        publication.yggdrasil_address.as_deref(),
-        Some("200:1111:2222:3333:4444:5555:6666:7777")
-    );
-    assert_eq!(
-        publication.yggdrasil_public_key.as_deref(),
-        Some("abcdef0123456789")
-    );
+    assert_eq!(publication.yggdrasil_address, None);
+    assert_eq!(publication.yggdrasil_public_key, None);
     assert_eq!(publication.wifi_client_certificate_pem, None);
 }
