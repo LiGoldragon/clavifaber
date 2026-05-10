@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+#
+# test-deployment-sandbox — exercise clavifaber's deployment shape
+# in a rootless sandbox container.
+#
+# We use **bubblewrap** (`bwrap`), not `systemd-nspawn`, because
+# spawning a contained process the script itself owns shouldn't need
+# sudo. bwrap uses user namespaces to create the sandbox unprivileged.
+# nspawn could do the same in principle (--private-users) but on
+# this distro it requires systemd-nsresourced for UID-range
+# allocation (not present), so it falls back to needing
+# CAP_SYS_ADMIN. bwrap has none of that ceremony.
+#
+# What the test does:
+#   1. Builds the clavifaber binary via nix.
+#   2. Sets up a host-visible state directory.
+#   3. Runs clavifaber in a bwrap sandbox with /nix/store bind-ro
+#      and the state directory bind-rw at /var/lib/clavifaber.
+#   4. Runs the same NOTA-only sequence CriomOS's complex-init
+#      systemd unit runs at boot (IdentitySetup +
+#      PublicKeyPublicationWriting).
+#   5. Verifies the host-visible state has the expected files,
+#      modes, and content.
+#
+# Requires:
+#   - bwrap (bubblewrap) — unprivileged
+#   - nix
+#
+# Usage:
+#   nix run .#test-deployment-sandbox
+#   # or directly (if cwd is the clavifaber repo root):
+#   bash scripts/test-deployment-sandbox
+
+set -euo pipefail
+
+if ! command -v bwrap >/dev/null; then
+  echo "FAIL: bwrap (bubblewrap) not on PATH" >&2
+  echo "      install via nix: nix profile install nixpkgs#bubblewrap" >&2
+  exit 1
+fi
+
+if ! command -v nix >/dev/null; then
+  echo "FAIL: nix not on PATH" >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "" ]]; then
+  CLAVIFABER_BIN_PATH=$(nix build --print-out-paths --no-link .# 2>/dev/null)/bin/clavifaber
+else
+  CLAVIFABER_BIN_PATH="$1"
+fi
+
+if [[ ! -x "$CLAVIFABER_BIN_PATH" ]]; then
+  echo "FAIL: clavifaber binary not executable at $CLAVIFABER_BIN_PATH" >&2
+  exit 1
+fi
+
+TEST_ROOT=$(mktemp -d /tmp/clavifaber-deployment-test.XXXXXX)
+STATE_DIR="$TEST_ROOT/state"
+mkdir -p "$STATE_DIR"
+chmod 755 "$STATE_DIR"
+
+cleanup() {
+  rm -rf "$TEST_ROOT"
+}
+trap cleanup EXIT
+
+echo "=== clavifaber deployment test (rootless container) ==="
+echo "    state dir:  $STATE_DIR"
+echo "    clavifaber: $CLAVIFABER_BIN_PATH"
+
+# bwrap arguments:
+#   --ro-bind /nix /nix     — clavifaber binary's closure is here, read-only
+#   --bind state /var/...   — clavifaber writes its state here, host-visible
+#   --proc /proc            — fresh /proc for the new pid namespace
+#   --dev /dev              — minimal /dev (urandom etc; clavifaber uses it
+#                              for keypair generation)
+#   --tmpfs /tmp            — fresh /tmp (clavifaber's AtomicFile uses
+#                              <output>.tmp adjacent to outputs, so this
+#                              isn't strictly required, but keeps the
+#                              sandbox tight)
+#   --tmpfs /etc            — empty /etc; clavifaber doesn't read /etc
+#                              (no /etc/passwd, no /etc/nsswitch needed
+#                              for these operations)
+#   --unshare-{pid,uts,ipc,user} — fresh namespaces; no host pollution
+#   --new-session           — new sid; doesn't share controlling tty
+#   --die-with-parent       — clavifaber dies if this script dies
+BWRAP_ARGS=(
+  --ro-bind /nix /nix
+  --bind "$STATE_DIR" /var/lib/clavifaber
+  --proc /proc
+  --dev /dev
+  --tmpfs /tmp
+  --tmpfs /etc
+  --setenv PATH /nix/store/none-real
+  --unshare-pid --unshare-uts --unshare-ipc --unshare-user
+  --new-session
+  --die-with-parent
+  --hostname clavifaber-deployment-test
+)
+
+echo ""
+echo "--- step 1/2: IdentitySetup ---"
+bwrap "${BWRAP_ARGS[@]}" -- \
+  "$CLAVIFABER_BIN_PATH" '(IdentitySetup "/var/lib/clavifaber")'
+
+echo ""
+echo "--- step 2/2: PublicKeyPublicationWriting ---"
+bwrap "${BWRAP_ARGS[@]}" -- \
+  "$CLAVIFABER_BIN_PATH" '(PublicKeyPublicationWriting bwrap-host "/var/lib/clavifaber" None None "/var/lib/clavifaber/publication.nota")'
+
+echo ""
+echo "--- verifying host-visible outputs ---"
+
+KEY="$STATE_DIR/key.pem"
+PUB="$STATE_DIR/ssh.pub"
+PUBLICATION="$STATE_DIR/publication.nota"
+
+for required in "$KEY" "$PUB" "$PUBLICATION"; do
+  if [ ! -s "$required" ]; then
+    echo "FAIL: $required missing or empty"
+    exit 1
+  fi
+done
+
+KEY_MODE=$(stat -c %a "$KEY")
+PUB_MODE=$(stat -c %a "$PUB")
+PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
+
+if [ "$KEY_MODE" != "600" ]; then
+  echo "FAIL: key.pem mode $KEY_MODE (expected 600)"
+  exit 1
+fi
+if [ "$PUB_MODE" != "644" ]; then
+  echo "FAIL: ssh.pub mode $PUB_MODE (expected 644)"
+  exit 1
+fi
+if [ "$PUBLICATION_MODE" != "644" ]; then
+  echo "FAIL: publication.nota mode $PUBLICATION_MODE (expected 644)"
+  exit 1
+fi
+
+if ! grep -q 'BEGIN PRIVATE KEY' "$KEY"; then
+  echo "FAIL: key.pem missing PEM header"
+  exit 1
+fi
+if ! head -c 12 "$PUB" | grep -q '^ssh-ed25519'; then
+  echo "FAIL: ssh.pub does not start with ssh-ed25519"
+  exit 1
+fi
+if ! grep -q 'PublicKeyPublication' "$PUBLICATION"; then
+  echo "FAIL: publication.nota missing PublicKeyPublication record"
+  exit 1
+fi
+if ! grep -q 'bwrap-host' "$PUBLICATION"; then
+  echo "FAIL: publication.nota missing node_name"
+  exit 1
+fi
+
+NODE_PUBLIC_KEY=$(cat "$PUB")
+if ! grep -qF "$NODE_PUBLIC_KEY" "$PUBLICATION"; then
+  echo "FAIL: publication.nota does not carry the host's ssh.pub"
+  exit 1
+fi
+
+echo "    key.pem (mode 0600): OK"
+echo "    ssh.pub (mode 0644): OK"
+echo "    publication.nota (mode 0644): OK"
+echo "    publication carries node_name + open_ssh_public_key: OK"
+echo ""
+echo "=== rootless deployment test PASSED ==="
