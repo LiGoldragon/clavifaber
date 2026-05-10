@@ -197,6 +197,7 @@ dependencies = [
  "p256",
  "pem-rfc7468",
  "rand",
+ "redb",
  "rkyv",
  "sema",
  "sha2",

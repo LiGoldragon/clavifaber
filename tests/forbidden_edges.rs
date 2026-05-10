@@ -4,7 +4,7 @@ use std::path::Path;
 const GPG_AGENT_OWNER: &str = "gpg_agent_session.rs";
 const FORBIDDEN_PATTERNS: &[&str] = &["use crate::gpg_agent", "crate::gpg_agent::"];
 
-struct ForbiddenEdgeScan {
+pub(crate) struct ForbiddenEdgeScan {
     sources: Vec<(String, String)>,
 }
 
@@ -16,7 +16,10 @@ impl ForbiddenEdgeScan {
         Self { sources }
     }
 
-    fn collect_rust_sources(directory: std::path::PathBuf, sources: &mut Vec<(String, String)>) {
+    pub(crate) fn collect_rust_sources(
+        directory: std::path::PathBuf,
+        sources: &mut Vec<(String, String)>,
+    ) {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(_) => return,
@@ -60,4 +63,31 @@ impl ForbiddenEdgeScan {
 #[test]
 fn only_gpg_agent_session_owns_the_gpg_agent_connection() {
     ForbiddenEdgeScan::from_crate_root().assert_only_owner_reaches_gpg_agent();
+}
+
+const ATOMIC_FILE_OWNER: &str = "util.rs";
+const ATOMIC_BYPASS_PATTERNS: &[&str] = &["fs::write", "File::create"];
+
+#[test]
+fn all_file_writes_go_through_atomic_file() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let mut sources: Vec<(String, String)> = Vec::new();
+    ForbiddenEdgeScan::collect_rust_sources(
+        std::path::Path::new(manifest_dir).join("src"),
+        &mut sources,
+    );
+    for (file_name, content) in &sources {
+        if file_name == ATOMIC_FILE_OWNER {
+            continue;
+        }
+        for pattern in ATOMIC_BYPASS_PATTERNS {
+            assert!(
+                !content.contains(pattern),
+                "Forbidden edge: {file_name} writes through `{pattern}` instead of \
+                 AtomicFile. Atomic write-then-rename is the source-of-truth for \
+                 publication.nota and identity files; partial writes must never be \
+                 visible to readers."
+            );
+        }
+    }
 }

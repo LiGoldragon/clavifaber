@@ -39,6 +39,7 @@ rkyv = { version = "0.8", default-features = false, features = ["alloc", "bytech
 
 [dev-dependencies]
 tempfile = "3"
+redb = "4"
 
 [lints.rust]
 unsafe_code = "forbid"

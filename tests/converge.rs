@@ -232,6 +232,65 @@ fn decode_publication(text: &str) -> PublicKeyPublication {
 }
 
 #[test]
+fn converge_writes_publication_with_644_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
+    let output = fixture.run_converge(&request);
+    assert!(output.status.success(), "stderr: {}", stderr_text(&output));
+
+    let mode = std::fs::metadata(fixture.publication_output())
+        .expect("publication.nota metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o644,
+        "publication.nota must be mode 0644 (publicly readable for the haywire-stage SSH-collector pattern), got {mode:o}"
+    );
+}
+
+#[test]
+fn converge_creates_state_database_with_600_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
+    let output = fixture.run_converge(&request);
+    assert!(output.status.success(), "stderr: {}", stderr_text(&output));
+
+    let mode = std::fs::metadata(fixture.state_database())
+        .expect("clavifaber.redb metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "clavifaber.redb must be mode 0600 (private to the service user — it carries the input-hash ledger), got {mode:o}"
+    );
+}
+
+#[test]
+fn converge_does_not_emit_private_key_bytes_on_stdout() {
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
+    let output = fixture.run_converge(&request);
+    assert!(output.status.success(), "stderr: {}", stderr_text(&output));
+
+    let stdout = stdout_text(&output);
+    let stderr = stderr_text(&output);
+    for marker in ["BEGIN PRIVATE KEY", "END PRIVATE KEY", "PRIVATE KEY"] {
+        assert!(
+            !stdout.contains(marker),
+            "stdout leaked private key marker `{marker}`: {stdout}"
+        );
+        assert!(
+            !stderr.contains(marker),
+            "stderr leaked private key marker `{marker}`: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn converge_round_trips_with_full_certificate_plan() {
     let request = ClaviFaberRequest::Converge(Converge {
         identity_directory: "/var/lib/clavifaber/identity".to_string(),

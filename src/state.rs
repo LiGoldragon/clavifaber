@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use rkyv::{Archive, Deserialize, Serialize};
 use sema::{Schema, SchemaVersion, Sema, Table};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub const SCHEMA: Schema = Schema {
@@ -47,10 +48,13 @@ pub struct State {
 
 impl State {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let sema = Sema::open_with_schema(path.as_ref(), &SCHEMA)
+        let path_ref = path.as_ref();
+        let sema = Sema::open_with_schema(path_ref, &SCHEMA)
             .map_err(|error| Error::State(format!("open sema: {error}")))?;
         sema.write(|txn| CONVERGENCE_LEDGER.ensure(txn))
             .map_err(|error| Error::State(format!("ensure ledger table: {error}")))?;
+        std::fs::set_permissions(path_ref, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| Error::State(format!("chmod {}: {error}", path_ref.display())))?;
         Ok(Self { sema })
     }
 
