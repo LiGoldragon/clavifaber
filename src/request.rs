@@ -10,6 +10,7 @@ use crate::actors::translate_send_error;
 use crate::error::{Error, Result};
 use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest};
 use crate::ssh_key::OpenSshPublicKey;
+use crate::state::{ConvergenceLedgerEntry, InputHash, State};
 use crate::util::AtomicFile;
 use crate::x509::{
     CertificateAuthorityCertificateRequest, CertificateDer, Ed25519SubjectPublicKey,
@@ -329,12 +330,39 @@ pub struct Converge {
     pub yggdrasil_address: Option<String>,
     pub yggdrasil_public_key: Option<String>,
     pub wifi_client_certificate_pem: Option<String>,
+    pub state_database: String,
 }
 
 impl Converge {
     async fn execute(self) -> Result<ClaviFaberResponse> {
+        let state = State::open(&self.state_database)?;
+        let plan = self.plan_bytes()?;
+        let current_hash = InputHash::of_bytes(&plan);
+        if let Some(entry) = state.read_converge_entry()?
+            && entry.last_input_hash == current_hash
+        {
+            return Ok(ClaviFaberResponse::ConvergenceComplete(
+                ConvergenceComplete {
+                    publication_output: self.publication_output,
+                    work_performed: false,
+                },
+            ));
+        }
+        self.run_actors().await?;
+        state.record_converge(&ConvergenceLedgerEntry {
+            last_input_hash: current_hash,
+        })?;
+        Ok(ClaviFaberResponse::ConvergenceComplete(
+            ConvergenceComplete {
+                publication_output: self.publication_output,
+                work_performed: true,
+            },
+        ))
+    }
+
+    async fn run_actors(&self) -> Result<()> {
         let runtime = RuntimeRoot::start(None);
-        let directory = PathBuf::from(self.identity_directory);
+        let directory = PathBuf::from(&self.identity_directory);
         runtime
             .host_identity
             .ask(EnsureIdentity {
@@ -345,11 +373,11 @@ impl Converge {
         let publication = runtime
             .publication_collector
             .ask(CollectPublication {
-                node_name: self.node_name,
+                node_name: self.node_name.clone(),
                 directory,
-                yggdrasil_address: self.yggdrasil_address,
-                yggdrasil_public_key: self.yggdrasil_public_key,
-                wifi_client_certificate_pem: self.wifi_client_certificate_pem,
+                yggdrasil_address: self.yggdrasil_address.clone(),
+                yggdrasil_public_key: self.yggdrasil_public_key.clone(),
+                wifi_client_certificate_pem: self.wifi_client_certificate_pem.clone(),
             })
             .await
             .map_err(translate_send_error)?;
@@ -358,17 +386,20 @@ impl Converge {
         let publication_text = encoder.into_string();
         AtomicFile::new(PathBuf::from(&self.publication_output))
             .write_bytes(publication_text.as_bytes(), 0o644)?;
-        Ok(ClaviFaberResponse::ConvergenceComplete(
-            ConvergenceComplete {
-                publication_output: self.publication_output,
-            },
-        ))
+        Ok(())
+    }
+
+    fn plan_bytes(&self) -> Result<Vec<u8>> {
+        let mut encoder = Encoder::new();
+        self.encode(&mut encoder)?;
+        Ok(encoder.into_string().into_bytes())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
 pub struct ConvergenceComplete {
     pub publication_output: String,
+    pub work_performed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

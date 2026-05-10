@@ -23,6 +23,22 @@ impl ConvergeFixture {
         self.temporary_directory.path().join("publication.nota")
     }
 
+    fn state_database(&self) -> PathBuf {
+        self.temporary_directory.path().join("clavifaber.redb")
+    }
+
+    fn converge_request(&self) -> Converge {
+        Converge {
+            identity_directory: directory_text(&self.identity_directory()),
+            node_name: "probus".to_string(),
+            publication_output: directory_text(&self.publication_output()),
+            yggdrasil_address: Some("200:0:0:0:0:0:0:1".to_string()),
+            yggdrasil_public_key: Some("ed25519:abc".to_string()),
+            wifi_client_certificate_pem: None,
+            state_database: directory_text(&self.state_database()),
+        }
+    }
+
     fn run_converge(&self, request: &ClaviFaberRequest) -> Output {
         Command::new(env!("CARGO_BIN_EXE_clavifaber"))
             .arg(request.to_nota().expect("encode request"))
@@ -43,43 +59,43 @@ fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
+fn convergence_reply(output: &Output) -> ConvergenceComplete {
+    let response = ClaviFaberResponse::from_nota(&stdout_text(output)).expect("decode reply");
+    let ClaviFaberResponse::ConvergenceComplete(complete) = response else {
+        panic!("expected ConvergenceComplete, got: {response:?}");
+    };
+    complete
+}
+
 #[test]
 fn converge_creates_identity_then_writes_publication_atomically() {
     let fixture = ConvergeFixture::new();
-    let request = ClaviFaberRequest::Converge(Converge {
-        identity_directory: directory_text(&fixture.identity_directory()),
-        node_name: "probus".to_string(),
-        publication_output: directory_text(&fixture.publication_output()),
-        yggdrasil_address: Some("200:0:0:0:0:0:0:1".to_string()),
-        yggdrasil_public_key: Some("ed25519:abc".to_string()),
-        wifi_client_certificate_pem: None,
-    });
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
 
     let output = fixture.run_converge(&request);
-
     assert!(
         output.status.success(),
         "converge failed; stderr: {}",
         stderr_text(&output)
     );
-
-    let response = ClaviFaberResponse::from_nota(&stdout_text(&output)).expect("decode reply");
-    let ClaviFaberResponse::ConvergenceComplete(ConvergenceComplete { publication_output }) =
-        response
-    else {
-        panic!("expected ConvergenceComplete, got: {response:?}");
-    };
+    let complete = convergence_reply(&output);
+    assert!(
+        complete.work_performed,
+        "first converge must report work_performed = true"
+    );
     assert_eq!(
-        publication_output,
+        complete.publication_output,
         directory_text(&fixture.publication_output())
     );
 
     let private_key = fixture.identity_directory().join("key.pem");
     let public_key = fixture.identity_directory().join("ssh.pub");
     let publication = fixture.publication_output();
+    let state_database = fixture.state_database();
     assert!(private_key.exists(), "key.pem missing");
     assert!(public_key.exists(), "ssh.pub missing");
     assert!(publication.exists(), "publication.nota missing");
+    assert!(state_database.exists(), "clavifaber.redb missing");
 
     let publication_text = std::fs::read_to_string(&publication).expect("read publication.nota");
     let parsed: PublicKeyPublication = decode_publication(&publication_text);
@@ -100,14 +116,7 @@ fn converge_creates_identity_then_writes_publication_atomically() {
 #[test]
 fn converge_is_idempotent_against_existing_identity() {
     let fixture = ConvergeFixture::new();
-    let request = ClaviFaberRequest::Converge(Converge {
-        identity_directory: directory_text(&fixture.identity_directory()),
-        node_name: "probus".to_string(),
-        publication_output: directory_text(&fixture.publication_output()),
-        yggdrasil_address: None,
-        yggdrasil_public_key: None,
-        wifi_client_certificate_pem: None,
-    });
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
 
     let first = fixture.run_converge(&request);
     assert!(
@@ -139,6 +148,75 @@ fn converge_is_idempotent_against_existing_identity() {
         first_publication, second_publication,
         "publication should be byte-identical on second converge"
     );
+}
+
+#[test]
+fn converge_skips_when_input_hash_matches_last_converged() {
+    let fixture = ConvergeFixture::new();
+    let request = ClaviFaberRequest::Converge(fixture.converge_request());
+
+    let first = fixture.run_converge(&request);
+    assert!(
+        first.status.success(),
+        "first converge: {}",
+        stderr_text(&first)
+    );
+    let first_complete = convergence_reply(&first);
+    assert!(
+        first_complete.work_performed,
+        "first converge must record work_performed = true"
+    );
+
+    // Externally delete publication.nota; the gate must trust sema and skip.
+    std::fs::remove_file(fixture.publication_output()).expect("remove publication.nota");
+
+    let second = fixture.run_converge(&request);
+    assert!(
+        second.status.success(),
+        "second converge: {}",
+        stderr_text(&second)
+    );
+    let second_complete = convergence_reply(&second);
+    assert!(
+        !second_complete.work_performed,
+        "second converge must report work_performed = false because input hash matches last converged"
+    );
+    assert!(
+        !fixture.publication_output().exists(),
+        "publication.nota must NOT have been re-created — the convergence gate is supposed to skip when sema reports no work to do"
+    );
+}
+
+#[test]
+fn converge_re_runs_when_input_changes() {
+    let fixture = ConvergeFixture::new();
+    let mut original = fixture.converge_request();
+    let first = fixture.run_converge(&ClaviFaberRequest::Converge(original.clone()));
+    assert!(
+        first.status.success(),
+        "first converge: {}",
+        stderr_text(&first)
+    );
+    let first_complete = convergence_reply(&first);
+    assert!(first_complete.work_performed);
+
+    original.node_name = "rigil".to_string();
+    let second = fixture.run_converge(&ClaviFaberRequest::Converge(original));
+    assert!(
+        second.status.success(),
+        "second converge: {}",
+        stderr_text(&second)
+    );
+    let second_complete = convergence_reply(&second);
+    assert!(
+        second_complete.work_performed,
+        "changed input must trigger re-run"
+    );
+
+    let publication_text = std::fs::read_to_string(fixture.publication_output())
+        .expect("read publication after re-run");
+    let parsed = decode_publication(&publication_text);
+    assert_eq!(parsed.node_name, "rigil");
 }
 
 fn decode_publication(text: &str) -> PublicKeyPublication {

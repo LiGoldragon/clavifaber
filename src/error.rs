@@ -26,6 +26,9 @@ pub enum Error {
 
     #[error("inline Nota argument must be UTF-8: {got}")]
     InvalidInlineNotaArgument { got: String },
+
+    #[error("state: {0}")]
+    State(String),
 }
 
 impl From<String> for Error {

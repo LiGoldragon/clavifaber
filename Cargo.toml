@@ -2,7 +2,7 @@
 name = "clavifaber"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "CriomOS host key-material provisioning tool."
 license-file = "LICENSE.md"
 repository = "https://github.com/LiGoldragon/clavifaber"
@@ -34,6 +34,8 @@ thiserror = "2"
 nota-codec = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
 kameo = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+sema = { git = "https://github.com/LiGoldragon/sema.git", branch = "main" }
+rkyv = { version = "0.8", default-features = false, features = ["alloc", "bytecheck"] }
 
 [dev-dependencies]
 tempfile = "3"
