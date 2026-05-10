@@ -17,16 +17,18 @@ flowchart TB
     root --> host_identity["HostIdentity<br/>(IdentityDirectory + NodeIdentity)"]
     root --> ssh_host_key["SshHostKey<br/>(ssh.pub projection)"]
     root --> publication_collector["PublicationCollector<br/>(PublicKeyPublication assembly)"]
-    root --> certificate_issuer["CertificateIssuer<br/>(CA / server / node / verify)"]
+    root --> certificate_issuer["CertificateIssuer<br/>(CA / server / node / verify — generic X.509 machinery)"]
+    root --> wifi_certificate["WifiCertificate<br/>(wifi-PKI cert lifecycle: ensure + idempotent-skip + write)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]
     root --> yggdrasil_key["YggdrasilKey<br/>(static yggdrasil keypair + projection via spawn_blocking + DelegatedReply)"]
     root -. test only .-> trace_recorder["TraceRecorder"]
 
     publication_collector -->|LoadIdentity| host_identity
     certificate_issuer -->|SignSha256Hash| gpg_agent_session
+    wifi_certificate -->|IssueServerCertificate / IssueNodeCertificate| certificate_issuer
 ```
 
-The five request planes below each map to one or more actors. The actor noun
+The six request planes below each map to one or more actors. The actor noun
 owns the plane's state, accepts typed messages, and emits typed replies.
 
 ## Planes
@@ -66,6 +68,38 @@ public projection when material is created or repaired.
 `CollectPublication { node_name, directory, yggdrasil: Option<YggdrasilProjection>, wifi_* }`
 and returns `PublicKeyPublication`. Internally asks `HostIdentity` for the
 current node identity.
+
+### WiFi PKI
+
+The wifi-PKI plane owns the lifecycle of the EAP-TLS certs used to admit
+hosts onto the cluster's WiFi: an AP-side server cert and per-host client
+certs. The X.509 issuance machinery lives in `CertificateIssuer` (which
+asks `GpgAgentSession` for the GPG-Ed25519 signature). `WifiCertificate`
+sits above it as the wifi-named domain plane: it knows when each cert
+already exists on disk (idempotent-skip avoids the gpg-agent round-trip)
+and which paths the wifi-PKI uses.
+
+**Actor**: `WifiCertificate` accepts `EnsureWifiServerCertificate
+{ plan: WifiServerCertificatePlan }` and `EnsureWifiClientCertificate
+{ plan: WifiClientCertificatePlan }`. Both replies are
+`Result<(), Error>`. The handler returns immediately when the named
+output files already exist (no CA read, no gpg-agent ask); otherwise it
+loads the CA, asks `CertificateIssuer` for the typed signing request,
+and writes the result atomically (server cert+key with mode 0644/0600;
+client cert with mode 0644). The `Reply` is not `DelegatedReply` — the
+`ask` to `CertificateIssuer` is non-blocking from the runtime's
+perspective (the blocking gpg call is already wrapped in
+`spawn_blocking` inside `GpgAgentSession`).
+
+The CA itself is not wifi-shaped (a CA can sign anything), so the CA
+issuance plane stays in `Converge::run_actors` calling
+`CertificateIssuer.IssueCertificateAuthority` directly via the
+`converge_certificate_authority` helper.
+
+Rotation is parked: v1 has no renewal scheduler, no redb-persisted
+deadline, no `RenewBeforeExpiry` message. The keypair-and-cert
+lifecycle owner is named today so renewal lands on it later — same
+shape as `YggdrasilKey`.
 
 ### Yggdrasil Identity
 
@@ -190,6 +224,8 @@ report.
 | `HostIdentity` records receive + reply trace events on `EnsureIdentity`. | `tests/actor_trace.rs::ensure_identity_witness_records_host_identity_receive_and_reply`. |
 | `PublicKeyDerivation` flow runs `HostIdentity.LoadIdentity` before `SshHostKey.WritePublicKeyProjection`. | `tests/actor_trace.rs::public_key_derivation_runs_host_identity_then_ssh_host_key`. |
 | `YggdrasilKey` projection runs `EnsureYggdrasilIdentity` before `ReadYggdrasilProjection`. | `tests/actor_trace.rs::yggdrasil_projection_runs_ensure_then_read`. |
+| `WifiCertificate` is the sole owner of wifi-PKI cert issuance from the convergence path. | `tests/actor_trace.rs::wifi_certificate_records_server_certificate_request` and `wifi_certificate_records_client_certificate_request` (skip-path mailbox witnesses). |
+| `WifiCertificate` skips re-issuance when output files already exist (no CA read, no gpg-agent traffic). | `tests/converge.rs::converge_skips_wifi_certificate_issuance_when_files_already_exist` (Converge with bogus keygrip succeeds because the actor short-circuits on disk-existence). |
 | Only `gpg_agent_session.rs` reaches the `gpg_agent` module; other actors and request handlers must ask `GpgAgentSession` through its mailbox. | `tests/forbidden_edges.rs::only_gpg_agent_session_owns_the_gpg_agent_connection` (static source scan). The `gpg_agent` module is also crate-private (`mod gpg_agent` in `src/lib.rs`). |
 | `GpgAgentSession`'s mailbox stays responsive during gpg-agent IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each gpg call (see `src/actors/gpg_agent_session.rs`). Future runtime witness needs an injectable signer. |
 | `YggdrasilKey`'s mailbox stays responsive during yggdrasil-binary IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each yggdrasil invocation (see `src/actors/yggdrasil_key.rs`). |
@@ -278,6 +314,7 @@ src/
     ├── gpg_agent_session.rs — GpgAgentSession actor + ReadEd25519PublicKey / SignSha256Hash (DelegatedReply over spawn_blocking)
     ├── yggdrasil_key.rs   — YggdrasilKey actor + EnsureYggdrasilIdentity / ReadYggdrasilProjection (DelegatedReply over spawn_blocking)
     ├── certificate_issuer.rs — CertificateIssuer actor + Issue* / Verify* messages (signer closure asks GpgAgentSession)
+    ├── wifi_certificate.rs — WifiCertificate actor + EnsureWifiServerCertificate / EnsureWifiClientCertificate (idempotent skip on disk existence; routes to CertificateIssuer)
     ├── publication_collector.rs — PublicationCollector actor + CollectPublication (asks HostIdentity)
     └── trace_recorder.rs  — TraceRecorder actor (test-time tracing; production passes None)
 ```

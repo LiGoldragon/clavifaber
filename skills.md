@@ -40,11 +40,14 @@ appropriate child actor through an `ActorRef`. The CLI binary uses
 `#[tokio::main]`.
 
 Current actors: `HostIdentity`, `SshHostKey`, `GpgAgentSession`,
-`CertificateIssuer`, `PublicationCollector`, `YggdrasilKey`, `TraceRecorder`
-(test-time only). Each owns its plane's data, accepts typed per-kind
-`Message<T>` impls, and (for the blocking-IO planes — `GpgAgentSession`,
-`YggdrasilKey`) replies via `DelegatedReply<Result<…, Error>>` over
-`tokio::task::spawn_blocking` so the mailbox stays responsive.
+`CertificateIssuer`, `PublicationCollector`, `WifiCertificate`,
+`YggdrasilKey`, `TraceRecorder` (test-time only). Each owns its plane's
+data, accepts typed per-kind `Message<T>` impls, and (for the blocking-IO
+planes — `GpgAgentSession`, `YggdrasilKey`) replies via
+`DelegatedReply<Result<…, Error>>` over `tokio::task::spawn_blocking` so
+the mailbox stays responsive. `WifiCertificate` replies plain
+`Result<(), Error>` because its `ask` to `CertificateIssuer` is itself
+non-blocking from the runtime's perspective.
 
 - Add a new actor as a new file under `src/actors/<noun>.rs` plus the matching
   module declaration in `src/actors.rs`. Co-locate the `Actor` impl, the
@@ -71,6 +74,13 @@ Current actors: `HostIdentity`, `SshHostKey`, `GpgAgentSession`,
   `yggdrasil` binary is resolved from the process PATH (override:
   `CLAVIFABER_YGGDRASIL_BIN`); CriomOS supplies it via the systemd
   unit's `Path = [ pkgs.yggdrasil ]`.
+- The wifi-PKI cert plane is owned by `WifiCertificate`. Converge's
+  `ServerCertificatePlan` and `NodeCertificatePlan` route through it
+  (not directly to `CertificateIssuer`) so disk-existence-idempotency
+  is taken in the same place as the future renewal driver. The CA
+  issuance plane (signing the cluster CA itself) is not wifi-shaped
+  and stays on `CertificateIssuer` directly via the
+  `converge_certificate_authority` helper in `src/request.rs`.
 
 For the Kameo-specific discipline (Self IS the actor, per-kind `Message<T>`
 impls, `DelegatedReply` for blocking IO, no-public-ZST rule, public consumer
