@@ -4,6 +4,7 @@ use clavifaber::request::{
     NodeCertificatePlan, ServerCertificatePlan,
 };
 use clavifaber::yggdrasil::YggdrasilPlan;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -434,5 +435,84 @@ fn converge_with_yggdrasil_plan_is_idempotent_on_keypair() {
     assert_eq!(
         first_keypair, second_keypair,
         "yggdrasil keypair must not change on re-converge — that would rotate the host's identity"
+    );
+}
+
+#[test]
+fn converge_skips_wifi_certificate_issuance_when_files_already_exist() {
+    // Witness for WifiCertificate's idempotent-skip path: pre-create
+    // the cert files with a marker payload, then run Converge with a
+    // ServerCertificatePlan + NodeCertificatePlan that name those
+    // files. The keygrip and CA path are deliberately bogus — if
+    // WifiCertificate did NOT take the skip path, it would try to
+    // read the (nonexistent) CA and ask gpg-agent with a bogus
+    // keygrip; both would fail. A successful converge with marker
+    // payloads still on disk is the witness that the actor skipped.
+    let fixture = ConvergeFixture::new();
+    let server_certificate = fixture
+        .temporary_directory
+        .path()
+        .join("preexisting-server.pem");
+    let server_private_key = fixture
+        .temporary_directory
+        .path()
+        .join("preexisting-server.key");
+    let node_certificate = fixture
+        .temporary_directory
+        .path()
+        .join("preexisting-node.pem");
+    fs::write(&server_certificate, b"MARKER-SERVER-PEM").expect("seed server cert");
+    fs::write(&server_private_key, b"MARKER-SERVER-KEY").expect("seed server key");
+    fs::write(&node_certificate, b"MARKER-NODE-PEM").expect("seed node cert");
+
+    let request = ClaviFaberRequest::Converge(Converge {
+        server_certificate: Some(ServerCertificatePlan {
+            keygrip: "BOGUS".to_string(),
+            certificate_authority: directory_text(
+                &fixture
+                    .temporary_directory
+                    .path()
+                    .join("nonexistent-ca.pem"),
+            ),
+            common_name: "irrelevant".to_string(),
+            output_certificate: directory_text(&server_certificate),
+            output_private_key: directory_text(&server_private_key),
+        }),
+        node_certificates: vec![NodeCertificatePlan {
+            keygrip: "BOGUS".to_string(),
+            certificate_authority: directory_text(
+                &fixture
+                    .temporary_directory
+                    .path()
+                    .join("nonexistent-ca.pem"),
+            ),
+            open_ssh_public_key: "ssh-ed25519 IGNORED node".to_string(),
+            common_name: "irrelevant".to_string(),
+            output: directory_text(&node_certificate),
+        }],
+        ..fixture.converge_request()
+    });
+
+    let output = fixture.run_converge(&request);
+    assert!(
+        output.status.success(),
+        "Converge must succeed via WifiCertificate skip path; stderr: {}",
+        stderr_text(&output)
+    );
+
+    assert_eq!(
+        fs::read(&server_certificate).expect("read server cert"),
+        b"MARKER-SERVER-PEM",
+        "server cert was re-issued instead of skipped"
+    );
+    assert_eq!(
+        fs::read(&server_private_key).expect("read server key"),
+        b"MARKER-SERVER-KEY",
+        "server private key was re-issued instead of skipped"
+    );
+    assert_eq!(
+        fs::read(&node_certificate).expect("read node cert"),
+        b"MARKER-NODE-PEM",
+        "node cert was re-issued instead of skipped"
     );
 }

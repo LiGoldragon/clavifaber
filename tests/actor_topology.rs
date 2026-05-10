@@ -5,6 +5,7 @@ use clavifaber::actors::publication_collector::PublicationCollector;
 use clavifaber::actors::runtime_root::RuntimeRoot;
 use clavifaber::actors::ssh_host_key::SshHostKey;
 use clavifaber::actors::trace_recorder::TraceRecorder;
+use clavifaber::actors::wifi_certificate::WifiCertificate;
 use clavifaber::actors::yggdrasil_key::YggdrasilKey;
 use std::mem;
 
@@ -31,6 +32,10 @@ fn actor_types_carry_data_not_zero_size() {
         "PublicationCollector is a public ZST"
     );
     assert!(
+        mem::size_of::<WifiCertificate>() > 0,
+        "WifiCertificate is a public ZST"
+    );
+    assert!(
         mem::size_of::<YggdrasilKey>() > 0,
         "YggdrasilKey is a public ZST"
     );
@@ -48,6 +53,7 @@ async fn runtime_root_spawns_every_named_actor() {
         gpg_agent_session,
         certificate_issuer,
         publication_collector,
+        wifi_certificate,
         yggdrasil_key,
         tracer,
     } = RuntimeRoot::start(None);
@@ -57,6 +63,7 @@ async fn runtime_root_spawns_every_named_actor() {
         gpg_agent_session,
         certificate_issuer,
         publication_collector,
+        wifi_certificate,
         yggdrasil_key,
         tracer,
     );
