@@ -29,6 +29,9 @@ pub enum Error {
 
     #[error("state: {0}")]
     State(String),
+
+    #[error("yggdrasil: {0}")]
+    Yggdrasil(String),
 }
 
 impl From<String> for Error {

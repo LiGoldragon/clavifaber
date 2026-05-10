@@ -8,7 +8,7 @@ use crate::actors::runtime_root::RuntimeRoot;
 use crate::actors::ssh_host_key::WritePublicKeyProjection;
 use crate::actors::translate_send_error;
 use crate::error::{Error, Result};
-use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest};
+use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest, yggdrasil_projection};
 use crate::ssh_key::OpenSshPublicKey;
 use crate::state::{ConvergenceLedgerEntry, InputHash, State};
 use crate::util::AtomicFile;
@@ -16,6 +16,7 @@ use crate::x509::{
     CertificateAuthorityCertificateRequest, CertificateDer, Ed25519SubjectPublicKey,
     NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
+use crate::yggdrasil::YggdrasilPlan;
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaRecord, NotaSum};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -331,8 +332,7 @@ pub struct Converge {
     pub identity_directory: String,
     pub node_name: String,
     pub publication_output: String,
-    pub yggdrasil_address: Option<String>,
-    pub yggdrasil_public_key: Option<String>,
+    pub yggdrasil: Option<YggdrasilPlan>,
     pub wifi_client_certificate_pem: Option<String>,
     pub state_database: String,
     pub certificate_authority: Option<CertificateAuthorityPlan>,
@@ -411,13 +411,16 @@ impl Converge {
         for plan in &self.node_certificates {
             converge_node_certificate(&runtime, plan).await?;
         }
+        let yggdrasil = match &self.yggdrasil {
+            Some(plan) => Some(yggdrasil_projection(&runtime, plan.clone()).await?),
+            None => None,
+        };
         let publication = runtime
             .publication_collector
             .ask(CollectPublication {
                 node_name: self.node_name.clone(),
                 directory,
-                yggdrasil_address: self.yggdrasil_address.clone(),
-                yggdrasil_public_key: self.yggdrasil_public_key.clone(),
+                yggdrasil,
                 wifi_client_certificate_pem: self.wifi_client_certificate_pem.clone(),
             })
             .await

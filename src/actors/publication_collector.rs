@@ -2,6 +2,7 @@ use crate::actors::host_identity::{HostIdentity, LoadIdentity};
 use crate::actors::trace_recorder::{TraceKind, TraceRecorder, emit};
 use crate::error::Error;
 use crate::publication::PublicKeyPublication;
+use crate::yggdrasil::YggdrasilProjection;
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::error::{Infallible, SendError};
@@ -38,8 +39,7 @@ impl Actor for PublicationCollector {
 pub struct CollectPublication {
     pub node_name: String,
     pub directory: PathBuf,
-    pub yggdrasil_address: Option<String>,
-    pub yggdrasil_public_key: Option<String>,
+    pub yggdrasil: Option<YggdrasilProjection>,
     pub wifi_client_certificate_pem: Option<String>,
 }
 
@@ -68,11 +68,15 @@ impl Message<CollectPublication> for PublicationCollector {
             Err(SendError::HandlerError(error)) => return Err(error),
             Err(other) => return Err(Error::Parse(format!("host identity unavailable: {other}"))),
         };
+        let (yggdrasil_address, yggdrasil_public_key) = match msg.yggdrasil {
+            Some(projection) => (Some(projection.address), Some(projection.public_key)),
+            None => (None, None),
+        };
         let publication = PublicKeyPublication {
             node_name: msg.node_name,
             open_ssh_public_key: identity.open_ssh_public_key(),
-            yggdrasil_address: msg.yggdrasil_address,
-            yggdrasil_public_key: msg.yggdrasil_public_key,
+            yggdrasil_address,
+            yggdrasil_public_key,
             wifi_client_certificate_pem: msg.wifi_client_certificate_pem,
         };
         emit(
