@@ -57,15 +57,16 @@ impl<'a> AssuanLine<'a> {
         let mut result = Vec::with_capacity(self.bytes.len());
         let mut index = 0;
         while index < self.bytes.len() {
-            if self.bytes[index] == b'%' && index + 2 < self.bytes.len() {
-                if let (Some(high), Some(low)) = (
+            if self.bytes[index] == b'%'
+                && index + 2 < self.bytes.len()
+                && let (Some(high), Some(low)) = (
                     hexadecimal_value(self.bytes[index + 1]),
                     hexadecimal_value(self.bytes[index + 2]),
-                ) {
-                    result.push(high << 4 | low);
-                    index += 3;
-                    continue;
-                }
+                )
+            {
+                result.push(high << 4 | low);
+                index += 3;
+                continue;
             }
             result.push(self.bytes[index]);
             index += 1;

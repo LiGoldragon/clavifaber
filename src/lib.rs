@@ -1,3 +1,4 @@
+pub mod actors;
 pub mod error;
 pub mod gpg_agent;
 pub mod identity;
