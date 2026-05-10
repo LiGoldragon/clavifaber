@@ -30,6 +30,7 @@ pub enum ClaviFaberRequest {
     CertificateVerification(CertificateVerification),
     PublicKeyPublicationRequest(PublicKeyPublicationRequest),
     Converge(Converge),
+    InspectState(InspectState),
 }
 
 impl ClaviFaberRequest {
@@ -64,6 +65,7 @@ impl ClaviFaberRequest {
                 ClaviFaberResponse::PublicKeyPublication(request.collect().await?),
             ),
             Self::Converge(request) => request.execute().await,
+            Self::InspectState(request) => request.execute(),
         }
     }
 }
@@ -77,6 +79,7 @@ pub enum ClaviFaberResponse {
     CertificateChainVerified(CertificateChainVerified),
     PublicKeyPublication(PublicKeyPublication),
     ConvergenceComplete(ConvergenceComplete),
+    StateReport(StateReport),
 }
 
 impl ClaviFaberResponse {
@@ -400,6 +403,33 @@ impl Converge {
 pub struct ConvergenceComplete {
     pub publication_output: String,
     pub work_performed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct InspectState {
+    pub state_database: String,
+}
+
+impl InspectState {
+    fn execute(self) -> Result<ClaviFaberResponse> {
+        let state = State::open(&self.state_database)?;
+        let entry = state.read_converge_entry()?;
+        Ok(ClaviFaberResponse::StateReport(StateReport {
+            converge: entry.map(|entry| ConvergeLedger {
+                last_input_hash_hex: hex::encode(entry.last_input_hash.0),
+            }),
+        }))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct StateReport {
+    pub converge: Option<ConvergeLedger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct ConvergeLedger {
+    pub last_input_hash_hex: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
