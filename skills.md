@@ -39,6 +39,13 @@ root lives in `actors::runtime_root::RuntimeRoot`; each request type's
 appropriate child actor through an `ActorRef`. The CLI binary uses
 `#[tokio::main]`.
 
+Current actors: `HostIdentity`, `SshHostKey`, `GpgAgentSession`,
+`CertificateIssuer`, `PublicationCollector`, `YggdrasilKey`, `TraceRecorder`
+(test-time only). Each owns its plane's data, accepts typed per-kind
+`Message<T>` impls, and (for the blocking-IO planes — `GpgAgentSession`,
+`YggdrasilKey`) replies via `DelegatedReply<Result<…, Error>>` over
+`tokio::task::spawn_blocking` so the mailbox stays responsive.
+
 - Add a new actor as a new file under `src/actors/<noun>.rs` plus the matching
   module declaration in `src/actors.rs`. Co-locate the `Actor` impl, the
   `Message<T>` impls for that actor, and the message/reply types in the same
@@ -58,6 +65,12 @@ appropriate child actor through an `ActorRef`. The CLI binary uses
 - New traces enter through `actors::trace_recorder::emit(...)` at message
   receive and reply boundaries; production passes `None` as the tracer; tests
   pass a `TraceRecorder` ActorRef and assert on the recorded sequence.
+- The Yggdrasil identity plane is owned by `YggdrasilKey`. Other actors
+  must not call the `yggdrasil` binary directly — they ask `YggdrasilKey`
+  via `EnsureYggdrasilIdentity` / `ReadYggdrasilProjection`. The
+  `yggdrasil` binary is resolved from the process PATH (override:
+  `CLAVIFABER_YGGDRASIL_BIN`); CriomOS supplies it via the systemd
+  unit's `Path = [ pkgs.yggdrasil ]`.
 
 For the Kameo-specific discipline (Self IS the actor, per-kind `Message<T>`
 impls, `DelegatedReply` for blocking IO, no-public-ZST rule, public consumer

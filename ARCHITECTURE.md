@@ -19,13 +19,14 @@ flowchart TB
     root --> publication_collector["PublicationCollector<br/>(PublicKeyPublication assembly)"]
     root --> certificate_issuer["CertificateIssuer<br/>(CA / server / node / verify)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]
+    root --> yggdrasil_key["YggdrasilKey<br/>(static yggdrasil keypair + projection via spawn_blocking + DelegatedReply)"]
     root -. test only .-> trace_recorder["TraceRecorder"]
 
     publication_collector -->|LoadIdentity| host_identity
     certificate_issuer -->|SignSha256Hash| gpg_agent_session
 ```
 
-The four request planes below each map to one or more actors. The actor noun
+The five request planes below each map to one or more actors. The actor noun
 owns the plane's state, accepts typed messages, and emits typed replies.
 
 ## Planes
@@ -52,19 +53,44 @@ accepts `EnsureIdentity` (load-or-generate-and-write) and `LoadIdentity`
 ### Public Projection
 
 The public projection plane turns private material into records other hosts
-can trust. Today this includes the OpenSSH public key and X.509 certificates
-for the CriomOS WiFi PKI path. The intended cluster bundle also includes
-Yggdrasil identity material and any WiFi client certificate public metadata
-needed by the cluster database.
+can trust. Today this includes the OpenSSH public key, the Yggdrasil identity
+projection (hex public key + IPv6 address), and X.509 certificates for the
+CriomOS WiFi PKI path. The intended cluster bundle also includes any WiFi
+client certificate public metadata needed by the cluster database.
 
 This plane produces `PublicKeyPublication` records. Consumers must not poll
 arbitrary files looking for key changes; producers push a complete current
 public projection when material is created or repaired.
 
 **Actor**: `PublicationCollector` owns publication assembly; accepts
-`CollectPublication { node_name, directory, yggdrasil_*, wifi_* }` and
-returns `PublicKeyPublication`. Internally asks `HostIdentity` for the
+`CollectPublication { node_name, directory, yggdrasil: Option<YggdrasilProjection>, wifi_* }`
+and returns `PublicKeyPublication`. Internally asks `HostIdentity` for the
 current node identity.
+
+### Yggdrasil Identity
+
+The Yggdrasil identity plane owns the per-host Yggdrasil keypair file
+(mode 0600) and projects it to the public hex public key + IPv6 address that
+other hosts consume. The keypair file's on-disk shape is
+`{"PrivateKey": "<128 hex>"}` — the same shape CriomOS's
+`network/yggdrasil.nix` consumes via `preCriadJson` (it merges this file with
+the runtime network overlay before invoking yggdrasild).
+
+Public projection is derived **statically** by invoking
+`yggdrasil -useconffile <keypair_path> -publickey -address`. Clavifaber never
+starts the daemon. The keypair, once minted, is stable across re-converge
+calls — rotation is parked (renewal scheduler is a separate concern, not in
+the v1 plane).
+
+**Actor**: `YggdrasilKey` owns the keypair file and the static projection;
+accepts `EnsureYggdrasilIdentity { keypair_path }` (idempotent: writes the
+keypair atomically with mode 0600 if absent) and `ReadYggdrasilProjection
+{ keypair_path }` (returns `YggdrasilProjection { public_key, address }` by
+running yggdrasil statically). Both handlers use
+`tokio::task::spawn_blocking` + `DelegatedReply` so the actor's mailbox stays
+responsive while the subprocess runs. The `yggdrasil` binary is resolved from
+the process PATH (override with `CLAVIFABER_YGGDRASIL_BIN`); CriomOS's
+`complex-init` systemd service supplies it via `Path = [ pkgs.yggdrasil ]`.
 
 ### Certificate Authority
 
@@ -141,10 +167,11 @@ lojix activation and exit in milliseconds when nothing's changed.
 
 The current convergence steps in order: ensure host identity → optionally
 issue CA cert → optionally issue server cert → for each node-cert plan,
-issue node cert → assemble `PublicKeyPublication` → atomic write to
-`publication.nota`. The publication file is the haywire-stage cluster
-contract: an SSH-readable consumer pulls each host's `publication.nota`
-manually until the networked exchange protocol lands.
+issue node cert → optionally ensure Yggdrasil keypair + read projection →
+assemble `PublicKeyPublication` → atomic write to `publication.nota`. The
+publication file is the haywire-stage cluster contract: an SSH-readable
+consumer pulls each host's `publication.nota` manually until the networked
+exchange protocol lands.
 
 ## Constraints
 
@@ -162,8 +189,10 @@ report.
 | The runtime root spawns every named actor. | `tests/actor_topology.rs::runtime_root_spawns_every_named_actor` (struct destructuring assertion). |
 | `HostIdentity` records receive + reply trace events on `EnsureIdentity`. | `tests/actor_trace.rs::ensure_identity_witness_records_host_identity_receive_and_reply`. |
 | `PublicKeyDerivation` flow runs `HostIdentity.LoadIdentity` before `SshHostKey.WritePublicKeyProjection`. | `tests/actor_trace.rs::public_key_derivation_runs_host_identity_then_ssh_host_key`. |
+| `YggdrasilKey` projection runs `EnsureYggdrasilIdentity` before `ReadYggdrasilProjection`. | `tests/actor_trace.rs::yggdrasil_projection_runs_ensure_then_read`. |
 | Only `gpg_agent_session.rs` reaches the `gpg_agent` module; other actors and request handlers must ask `GpgAgentSession` through its mailbox. | `tests/forbidden_edges.rs::only_gpg_agent_session_owns_the_gpg_agent_connection` (static source scan). The `gpg_agent` module is also crate-private (`mod gpg_agent` in `src/lib.rs`). |
 | `GpgAgentSession`'s mailbox stays responsive during gpg-agent IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each gpg call (see `src/actors/gpg_agent_session.rs`). Future runtime witness needs an injectable signer. |
+| `YggdrasilKey`'s mailbox stays responsive during yggdrasil-binary IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each yggdrasil invocation (see `src/actors/yggdrasil_key.rs`). |
 
 ### Convergence
 
@@ -182,6 +211,8 @@ report.
 | The identity directory is mode 0700; `key.pem` is 0600; `ssh.pub` is 0644. | `tests/identity_directory_lifecycle.rs::complex_init_creates_private_key_public_key_and_public_stdout_projection` and `…leaves_stable_modes_and_no_temporary_files`. |
 | `publication.nota` is written with mode 0644 (publicly readable). | `tests/converge.rs::converge_writes_publication_with_644_mode`. |
 | `clavifaber.redb` is created with mode 0600 (private to the service user). | `tests/converge.rs::converge_creates_state_database_with_600_mode`. |
+| The Yggdrasil keypair file is written with mode 0600 (private host material). | `tests/converge.rs::converge_with_yggdrasil_plan_populates_publication_and_keypair_file`. |
+| The Yggdrasil keypair is stable across re-converge (no silent rotation). | `tests/converge.rs::converge_with_yggdrasil_plan_is_idempotent_on_keypair`. |
 | All file writes go through `AtomicFile` (write-then-rename); no partial files visible mid-write. | Source scan: `tests/forbidden_edges.rs::all_file_writes_go_through_atomic_file` (no `fs::write` / `File::create` outside `util.rs`). |
 | A corrupt private key is preserved (renamed to `key.pem.broken.<timestamp>`) before regeneration. | `tests/identity_directory_lifecycle.rs::complex_init_quarantines_corrupt_private_key_before_replacement`. |
 
@@ -192,6 +223,7 @@ report.
 | Private key bytes (PKCS#8 PEM) never appear in the binary's stdout. | `tests/converge.rs::converge_does_not_emit_private_key_bytes_on_stdout`. |
 | Private key bytes never appear in the binary's stderr. | Same test asserts on stderr too. |
 | Private key bytes never appear in any NOTA response value. | Source-shape claim — no response variant carries private material; reinforced by the stdout/stderr witness above. |
+| Yggdrasil private key bytes never leak — only the hex public key and IPv6 address reach the publication. | Source-shape claim: `YggdrasilProjection` carries only `public_key` + `address`; `CollectPublication` projects only those into `PublicKeyPublication`. The keypair file (mode 0600) is the only durable carrier of the private bytes. |
 
 ## Test Contract
 
@@ -233,6 +265,7 @@ src/
 ├── identity.rs            — IdentityDirectory + NodeIdentity (data-bearing)
 ├── publication.rs         — PublicKeyPublication + PublicKeyPublicationRequest
 ├── ssh_key.rs             — OpenSshPublicKey
+├── yggdrasil.rs           — YggdrasilKeypairFile + YggdrasilPlan + YggdrasilProjection
 ├── x509.rs                — Cert types + async issuer methods (signer closure)
 ├── util.rs                — AtomicFile, AssuanLine
 ├── gpg_agent.rs           — Assuan client (crate-private; only gpg_agent_session reaches it)
@@ -243,6 +276,7 @@ src/
     ├── host_identity.rs   — HostIdentity actor + EnsureIdentity / LoadIdentity messages
     ├── ssh_host_key.rs    — SshHostKey actor + WritePublicKeyProjection message
     ├── gpg_agent_session.rs — GpgAgentSession actor + ReadEd25519PublicKey / SignSha256Hash (DelegatedReply over spawn_blocking)
+    ├── yggdrasil_key.rs   — YggdrasilKey actor + EnsureYggdrasilIdentity / ReadYggdrasilProjection (DelegatedReply over spawn_blocking)
     ├── certificate_issuer.rs — CertificateIssuer actor + Issue* / Verify* messages (signer closure asks GpgAgentSession)
     ├── publication_collector.rs — PublicationCollector actor + CollectPublication (asks HostIdentity)
     └── trace_recorder.rs  — TraceRecorder actor (test-time tracing; production passes None)
