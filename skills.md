@@ -31,6 +31,40 @@ does not patch cluster database files.
 - New operator behavior should enter through `ClaviFaberRequest` and return
   `ClaviFaberResponse`.
 
+## Actor Topology
+
+Every plane is owned by a Kameo 0.20 actor under `src/actors/`. The runtime
+root lives in `actors::runtime_root::RuntimeRoot`; each request type's
+`execute()` is `async` and dispatches by sending typed `Message<T>` to the
+appropriate child actor through an `ActorRef`. The CLI binary uses
+`#[tokio::main]`.
+
+- Add a new actor as a new file under `src/actors/<noun>.rs` plus the matching
+  module declaration in `src/actors.rs`. Co-locate the `Actor` impl, the
+  `Message<T>` impls for that actor, and the message/reply types in the same
+  file (per `~/primary/skills/kameo.md` §"The core shape").
+- Actor types must carry data — no public ZST actor markers. The
+  `tests/actor_topology.rs::actor_types_carry_data_not_zero_size` test enforces
+  `mem::size_of::<MyActor>() > 0` for every named actor.
+- `GpgAgentSession` is the **sole owner** of the `gpg_agent` module's
+  connections. Other actors and request handlers must ask it through its
+  mailbox. The `gpg_agent` module is crate-private; the
+  `tests/forbidden_edges.rs::only_gpg_agent_session_owns_the_gpg_agent_connection`
+  static source scan enforces this.
+- New cert-side behavior in `x509.rs` takes an async signer closure; the
+  closure is supplied by `CertificateIssuer` and asks `GpgAgentSession` for
+  the signature. Do not reach for `GpgAgent::connect()` outside
+  `gpg_agent_session.rs`.
+- New traces enter through `actors::trace_recorder::emit(...)` at message
+  receive and reply boundaries; production passes `None` as the tracer; tests
+  pass a `TraceRecorder` ActorRef and assert on the recorded sequence.
+
+For the Kameo-specific discipline (Self IS the actor, per-kind `Message<T>`
+impls, `DelegatedReply` for blocking IO, no-public-ZST rule, public consumer
+surface), read `~/primary/skills/kameo.md`. For the architectural rule
+(actors all the way down, no shared locks, supervision is part of the
+design), read `~/primary/skills/actor-systems.md`.
+
 ## Nix And Tests
 
 - `nix flake check` is the pure test entry point.
