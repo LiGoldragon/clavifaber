@@ -105,7 +105,7 @@
             mkdir -p $out
             export HOME=$TMPDIR/home
             mkdir -p $HOME
-            ${clavifaber}/bin/clavifaber "(Converge \"$out/identity\" probus \"$out/publication.nota\" None None None \"$out/clavifaber.redb\")" > $out/converge_reply.nota
+            ${clavifaber}/bin/clavifaber "(Converge \"$out/identity\" probus \"$out/publication.nota\" None None None \"$out/clavifaber.redb\" None None [])" > $out/converge_reply.nota
             test -f "$out/clavifaber.redb" || (echo "writer did not create clavifaber.redb"; exit 1)
             test -f "$out/publication.nota" || (echo "writer did not write publication.nota"; exit 1)
             grep -q 'true' "$out/converge_reply.nota" || (echo "writer did not record work_performed = true"; cat "$out/converge_reply.nota"; exit 1)

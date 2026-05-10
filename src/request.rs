@@ -21,6 +21,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClaviFaberRequest {
     CertificateAuthorityInitialization(CertificateAuthorityInitialization),
     ServerCertificateCreation(ServerCertificateCreation),
@@ -334,6 +335,34 @@ pub struct Converge {
     pub yggdrasil_public_key: Option<String>,
     pub wifi_client_certificate_pem: Option<String>,
     pub state_database: String,
+    pub certificate_authority: Option<CertificateAuthorityPlan>,
+    pub server_certificate: Option<ServerCertificatePlan>,
+    pub node_certificates: Vec<NodeCertificatePlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct CertificateAuthorityPlan {
+    pub keygrip: String,
+    pub common_name: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct ServerCertificatePlan {
+    pub keygrip: String,
+    pub certificate_authority: String,
+    pub common_name: String,
+    pub output_certificate: String,
+    pub output_private_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct NodeCertificatePlan {
+    pub keygrip: String,
+    pub certificate_authority: String,
+    pub open_ssh_public_key: String,
+    pub common_name: String,
+    pub output: String,
 }
 
 impl Converge {
@@ -373,6 +402,15 @@ impl Converge {
             })
             .await
             .map_err(translate_send_error)?;
+        if let Some(plan) = &self.certificate_authority {
+            converge_certificate_authority(&runtime, plan).await?;
+        }
+        if let Some(plan) = &self.server_certificate {
+            converge_server_certificate(&runtime, plan).await?;
+        }
+        for plan in &self.node_certificates {
+            converge_node_certificate(&runtime, plan).await?;
+        }
         let publication = runtime
             .publication_collector
             .ask(CollectPublication {
@@ -403,6 +441,78 @@ impl Converge {
 pub struct ConvergenceComplete {
     pub publication_output: String,
     pub work_performed: bool,
+}
+
+async fn converge_certificate_authority(
+    runtime: &RuntimeRoot,
+    plan: &CertificateAuthorityPlan,
+) -> Result<()> {
+    let public_key_bytes = runtime
+        .gpg_agent_session
+        .ask(ReadEd25519PublicKey {
+            keygrip: plan.keygrip.clone(),
+        })
+        .await
+        .map_err(translate_send_error)?;
+    let subject_public_key_info =
+        Ed25519SubjectPublicKey::from_bytes(public_key_bytes).subject_public_key_info()?;
+    let certificate = runtime
+        .certificate_issuer
+        .ask(IssueCertificateAuthority {
+            keygrip: plan.keygrip.clone(),
+            request: CertificateAuthorityCertificateRequest::new(
+                plan.common_name.clone(),
+                subject_public_key_info,
+            ),
+        })
+        .await
+        .map_err(translate_send_error)?;
+    TextFile::from_path(&plan.output).write_public(&certificate.to_pem()?)
+}
+
+async fn converge_server_certificate(
+    runtime: &RuntimeRoot,
+    plan: &ServerCertificatePlan,
+) -> Result<()> {
+    let certificate_authority =
+        TextFile::from_path(&plan.certificate_authority).read_certificate()?;
+    let server_certificate = runtime
+        .certificate_issuer
+        .ask(IssueServerCertificate {
+            keygrip: plan.keygrip.clone(),
+            certificate_authority,
+            request: ServerCertificateSigningRequest::new(plan.common_name.clone()),
+        })
+        .await
+        .map_err(translate_send_error)?;
+    ServerCertificateFiles {
+        certificate: TextFile::from_path(&plan.output_certificate),
+        private_key: TextFile::from_path(&plan.output_private_key),
+    }
+    .write(&server_certificate)
+}
+
+async fn converge_node_certificate(
+    runtime: &RuntimeRoot,
+    plan: &NodeCertificatePlan,
+) -> Result<()> {
+    let certificate_authority =
+        TextFile::from_path(&plan.certificate_authority).read_certificate()?;
+    let subject_public_key_info =
+        OpenSshPublicKey::from_text(plan.open_ssh_public_key.clone())?.subject_public_key_info()?;
+    let certificate = runtime
+        .certificate_issuer
+        .ask(IssueNodeCertificate {
+            keygrip: plan.keygrip.clone(),
+            certificate_authority,
+            request: NodeCertificateSigningRequest::new(
+                plan.common_name.clone(),
+                subject_public_key_info,
+            ),
+        })
+        .await
+        .map_err(translate_send_error)?;
+    TextFile::from_path(&plan.output).write_public(&certificate.to_pem()?)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]

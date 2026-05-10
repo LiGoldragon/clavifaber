@@ -1,5 +1,8 @@
 use clavifaber::publication::PublicKeyPublication;
-use clavifaber::request::{ClaviFaberRequest, ClaviFaberResponse, Converge, ConvergenceComplete};
+use clavifaber::request::{
+    CertificateAuthorityPlan, ClaviFaberRequest, ClaviFaberResponse, Converge, ConvergenceComplete,
+    NodeCertificatePlan, ServerCertificatePlan,
+};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -36,6 +39,9 @@ impl ConvergeFixture {
             yggdrasil_public_key: Some("ed25519:abc".to_string()),
             wifi_client_certificate_pem: None,
             state_database: directory_text(&self.state_database()),
+            certificate_authority: None,
+            server_certificate: None,
+            node_certificates: Vec::new(),
         }
     }
 
@@ -223,4 +229,40 @@ fn decode_publication(text: &str) -> PublicKeyPublication {
     use nota_codec::{Decoder, NotaDecode};
     let mut decoder = Decoder::new(text);
     PublicKeyPublication::decode(&mut decoder).expect("decode publication.nota")
+}
+
+#[test]
+fn converge_round_trips_with_full_certificate_plan() {
+    let request = ClaviFaberRequest::Converge(Converge {
+        identity_directory: "/var/lib/clavifaber/identity".to_string(),
+        node_name: "probus".to_string(),
+        publication_output: "/var/lib/clavifaber/publication.nota".to_string(),
+        yggdrasil_address: None,
+        yggdrasil_public_key: None,
+        wifi_client_certificate_pem: None,
+        state_database: "/var/lib/clavifaber/clavifaber.redb".to_string(),
+        certificate_authority: Some(CertificateAuthorityPlan {
+            keygrip: "ABCDEF0123456789".to_string(),
+            common_name: "Aedifico CA".to_string(),
+            output: "/var/lib/clavifaber/ca.pem".to_string(),
+        }),
+        server_certificate: Some(ServerCertificatePlan {
+            keygrip: "ABCDEF0123456789".to_string(),
+            certificate_authority: "/var/lib/clavifaber/ca.pem".to_string(),
+            common_name: "faber.aedifico.criome".to_string(),
+            output_certificate: "/var/lib/clavifaber/server.pem".to_string(),
+            output_private_key: "/var/lib/clavifaber/server.key".to_string(),
+        }),
+        node_certificates: vec![NodeCertificatePlan {
+            keygrip: "ABCDEF0123456789".to_string(),
+            certificate_authority: "/var/lib/clavifaber/ca.pem".to_string(),
+            open_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAA probus".to_string(),
+            common_name: "probus@aedifico".to_string(),
+            output: "/var/lib/clavifaber/probus.pem".to_string(),
+        }],
+    });
+
+    let encoded = request.to_nota().expect("encode converge with cert plan");
+    let decoded = ClaviFaberRequest::from_nota(&encoded).expect("decode converge with cert plan");
+    assert_eq!(decoded, request, "round-trip lost fields: {encoded}");
 }
