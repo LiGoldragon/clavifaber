@@ -91,3 +91,36 @@ fn all_file_writes_go_through_atomic_file() {
         }
     }
 }
+
+const YGGDRASIL_OWNER_DATA: &str = "yggdrasil.rs";
+const YGGDRASIL_OWNER_ACTOR: &str = "yggdrasil_key.rs";
+const YGGDRASIL_BYPASS_PATTERNS: &[&str] = &["\"yggdrasil\"", "yggdrasil_binary"];
+
+#[test]
+fn only_yggdrasil_key_owns_the_yggdrasil_binary() {
+    // Mirror of `only_gpg_agent_session_owns_the_gpg_agent_connection`:
+    // the yggdrasil binary is reached only by the data type
+    // (`src/yggdrasil.rs`) and the actor that drives it
+    // (`src/actors/yggdrasil_key.rs`). Other actors and request
+    // handlers must ask `YggdrasilKey` through its mailbox.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let mut sources: Vec<(String, String)> = Vec::new();
+    ForbiddenEdgeScan::collect_rust_sources(
+        std::path::Path::new(manifest_dir).join("src"),
+        &mut sources,
+    );
+    for (file_name, content) in &sources {
+        if file_name == YGGDRASIL_OWNER_DATA || file_name == YGGDRASIL_OWNER_ACTOR {
+            continue;
+        }
+        for pattern in YGGDRASIL_BYPASS_PATTERNS {
+            assert!(
+                !content.contains(pattern),
+                "Forbidden edge: {file_name} reaches the yggdrasil binary directly via \
+                 `{pattern}`. Only {YGGDRASIL_OWNER_DATA} (data) and {YGGDRASIL_OWNER_ACTOR} \
+                 (actor) may invoke yggdrasil; other actors and request handlers must ask \
+                 YggdrasilKey through its mailbox."
+            );
+        }
+    }
+}
