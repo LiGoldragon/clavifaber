@@ -26,6 +26,7 @@ impl Actor for HostIdentity {
     }
 }
 
+#[derive(Debug)]
 pub struct EnsureIdentity {
     pub directory: PathBuf,
 }
@@ -63,6 +64,7 @@ impl Message<EnsureIdentity> for HostIdentity {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadIdentity {
     pub directory: PathBuf,
 }

@@ -1,6 +1,9 @@
+use crate::actors::host_identity::{EnsureIdentity, LoadIdentity};
+use crate::actors::runtime_root::RuntimeRoot;
+use crate::actors::ssh_host_key::WritePublicKeyProjection;
+use crate::actors::translate_send_error;
 use crate::error::{Error, Result};
 use crate::gpg_agent::GpgAgent;
-use crate::identity::{IdentityDirectory, NodeIdentity};
 use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest};
 use crate::ssh_key::OpenSshPublicKey;
 use crate::util::AtomicFile;
@@ -44,17 +47,17 @@ impl ClaviFaberRequest {
         Ok(encoder.into_string())
     }
 
-    pub fn execute(self) -> Result<ClaviFaberResponse> {
+    pub async fn execute(self) -> Result<ClaviFaberResponse> {
         match self {
             Self::CertificateAuthorityInitialization(request) => request.execute(),
             Self::ServerCertificateCreation(request) => request.execute(),
             Self::NodeCertificateCreation(request) => request.execute(),
-            Self::IdentityDirectoryInitialization(request) => request.execute(),
-            Self::PublicKeyDerivation(request) => request.execute(),
+            Self::IdentityDirectoryInitialization(request) => request.execute().await,
+            Self::PublicKeyDerivation(request) => request.execute().await,
             Self::CertificateVerification(request) => request.execute(),
-            Self::PublicKeyPublicationRequest(request) => {
-                Ok(ClaviFaberResponse::PublicKeyPublication(request.collect()?))
-            }
+            Self::PublicKeyPublicationRequest(request) => Ok(
+                ClaviFaberResponse::PublicKeyPublication(request.collect().await?),
+            ),
         }
     }
 }
@@ -182,16 +185,15 @@ pub struct IdentityDirectoryInitialization {
 }
 
 impl IdentityDirectoryInitialization {
-    fn execute(self) -> Result<ClaviFaberResponse> {
-        let identity_directory = IdentityDirectory::from_path(PathBuf::from(&self.directory));
-        let identity = match identity_directory.existing_identity()? {
-            Some(identity) => identity,
-            None => {
-                let identity = NodeIdentity::generate();
-                identity_directory.write_identity(&identity)?;
-                identity
-            }
-        };
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let identity = runtime
+            .host_identity
+            .ask(EnsureIdentity {
+                directory: PathBuf::from(self.directory),
+            })
+            .await
+            .map_err(translate_send_error)?;
         Ok(ClaviFaberResponse::PublicKeyProjection(
             PublicKeyProjection {
                 open_ssh_public_key: identity.open_ssh_public_key(),
@@ -206,13 +208,27 @@ pub struct PublicKeyDerivation {
 }
 
 impl PublicKeyDerivation {
-    fn execute(self) -> Result<ClaviFaberResponse> {
-        let identity_directory = IdentityDirectory::from_path(PathBuf::from(&self.directory));
-        let identity = identity_directory.load_identity()?;
-        identity_directory.write_public_key(&identity)?;
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let directory = PathBuf::from(self.directory);
+        let identity = runtime
+            .host_identity
+            .ask(LoadIdentity {
+                directory: directory.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
+        let projection = runtime
+            .ssh_host_key
+            .ask(WritePublicKeyProjection {
+                directory,
+                identity,
+            })
+            .await
+            .map_err(translate_send_error)?;
         Ok(ClaviFaberResponse::PublicKeyProjection(
             PublicKeyProjection {
-                open_ssh_public_key: identity.open_ssh_public_key(),
+                open_ssh_public_key: projection.open_ssh_public_key,
             },
         ))
     }

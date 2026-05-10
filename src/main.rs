@@ -17,8 +17,8 @@ struct Cli {
 }
 
 impl Cli {
-    fn run(self) -> Result<()> {
-        self.command.compatibility_command().run()
+    async fn run(self) -> Result<()> {
+        self.command.compatibility_command().run().await
     }
 }
 
@@ -212,8 +212,8 @@ struct CompatibilityCommand {
 }
 
 impl CompatibilityCommand {
-    fn run(self) -> Result<()> {
-        let response = self.request.execute()?;
+    async fn run(self) -> Result<()> {
+        let response = self.request.execute().await?;
         self.mode.print(response)
     }
 }
@@ -271,19 +271,20 @@ impl Process {
         }
     }
 
-    fn run(self) -> Result<()> {
+    async fn run(self) -> Result<()> {
         if let Some(request) = self.command_line.inline_request()? {
-            let response = request.execute()?;
+            let response = request.execute().await?;
             println!("{}", response.to_nota()?);
             return Ok(());
         }
 
-        Cli::parse().run()
+        Cli::parse().run().await
     }
 }
 
-fn main() {
-    if let Err(error) = Process::from_env().run() {
+#[tokio::main]
+async fn main() {
+    if let Err(error) = Process::from_env().run().await {
         eprintln!("error: {error}");
         std::process::exit(1);
     }

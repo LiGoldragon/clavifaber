@@ -34,6 +34,7 @@ impl Actor for PublicationCollector {
     }
 }
 
+#[derive(Debug)]
 pub struct CollectPublication {
     pub node_name: String,
     pub directory: PathBuf,

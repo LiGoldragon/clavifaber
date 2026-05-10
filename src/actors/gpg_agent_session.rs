@@ -27,6 +27,7 @@ impl Actor for GpgAgentSession {
     }
 }
 
+#[derive(Debug)]
 pub struct ReadEd25519PublicKey {
     pub keygrip: String,
 }
@@ -84,6 +85,7 @@ impl Message<ReadEd25519PublicKey> for GpgAgentSession {
     }
 }
 
+#[derive(Debug)]
 pub struct SignSha256Hash {
     pub keygrip: String,
     pub hash_hex: String,

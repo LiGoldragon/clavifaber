@@ -48,6 +48,7 @@ impl Message<TraceEvent> for TraceRecorder {
     }
 }
 
+#[derive(Debug)]
 pub struct ReportTrace;
 
 impl Message<ReportTrace> for TraceRecorder {

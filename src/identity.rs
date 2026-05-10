@@ -107,6 +107,7 @@ impl IdentityDirectory {
     }
 }
 
+#[derive(Debug)]
 pub struct NodeIdentity {
     signing_key: SigningKey,
 }

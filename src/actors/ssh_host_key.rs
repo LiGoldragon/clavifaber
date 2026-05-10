@@ -26,6 +26,7 @@ impl Actor for SshHostKey {
     }
 }
 
+#[derive(Debug)]
 pub struct WritePublicKeyProjection {
     pub directory: PathBuf,
     pub identity: NodeIdentity,
