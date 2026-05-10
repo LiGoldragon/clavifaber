@@ -1,16 +1,18 @@
+use crate::actors::certificate_issuer::{
+    IssueCertificateAuthority, IssueNodeCertificate, IssueServerCertificate, VerifyCertificateChain,
+};
+use crate::actors::gpg_agent_session::ReadEd25519PublicKey;
 use crate::actors::host_identity::{EnsureIdentity, LoadIdentity};
 use crate::actors::runtime_root::RuntimeRoot;
 use crate::actors::ssh_host_key::WritePublicKeyProjection;
 use crate::actors::translate_send_error;
 use crate::error::{Error, Result};
-use crate::gpg_agent::GpgAgent;
 use crate::publication::{PublicKeyPublication, PublicKeyPublicationRequest};
 use crate::ssh_key::OpenSshPublicKey;
 use crate::util::AtomicFile;
 use crate::x509::{
-    CertificateAuthorityCertificateRequest, CertificateAuthorityIssuer, CertificateChain,
-    CertificateDer, Ed25519SubjectPublicKey, NodeCertificateSigningRequest, ServerCertificate,
-    ServerCertificateSigningRequest,
+    CertificateAuthorityCertificateRequest, CertificateDer, Ed25519SubjectPublicKey,
+    NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaRecord, NotaSum};
 use std::ffi::OsString;
@@ -49,12 +51,12 @@ impl ClaviFaberRequest {
 
     pub async fn execute(self) -> Result<ClaviFaberResponse> {
         match self {
-            Self::CertificateAuthorityInitialization(request) => request.execute(),
-            Self::ServerCertificateCreation(request) => request.execute(),
-            Self::NodeCertificateCreation(request) => request.execute(),
+            Self::CertificateAuthorityInitialization(request) => request.execute().await,
+            Self::ServerCertificateCreation(request) => request.execute().await,
+            Self::NodeCertificateCreation(request) => request.execute().await,
             Self::IdentityDirectoryInitialization(request) => request.execute().await,
             Self::PublicKeyDerivation(request) => request.execute().await,
-            Self::CertificateVerification(request) => request.execute(),
+            Self::CertificateVerification(request) => request.execute().await,
             Self::PublicKeyPublicationRequest(request) => Ok(
                 ClaviFaberResponse::PublicKeyPublication(request.collect().await?),
             ),
@@ -101,14 +103,28 @@ pub struct CertificateAuthorityInitialization {
 }
 
 impl CertificateAuthorityInitialization {
-    fn execute(self) -> Result<ClaviFaberResponse> {
-        let public_key_bytes = GpgEd25519PublicKey::from_keygrip(&self.keygrip).bytes()?;
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let public_key_bytes = runtime
+            .gpg_agent_session
+            .ask(ReadEd25519PublicKey {
+                keygrip: self.keygrip.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
         let subject_public_key_info =
             Ed25519SubjectPublicKey::from_bytes(public_key_bytes).subject_public_key_info()?;
-        let issuer = CertificateAuthorityIssuer::from_keygrip(self.keygrip);
-        let certificate = issuer.self_signed_certificate(
-            CertificateAuthorityCertificateRequest::new(self.common_name, subject_public_key_info),
-        )?;
+        let certificate = runtime
+            .certificate_issuer
+            .ask(IssueCertificateAuthority {
+                keygrip: self.keygrip,
+                request: CertificateAuthorityCertificateRequest::new(
+                    self.common_name,
+                    subject_public_key_info,
+                ),
+            })
+            .await
+            .map_err(translate_send_error)?;
         TextFile::from_path(&self.output).write_public(&certificate.to_pem()?)?;
         Ok(ClaviFaberResponse::CertificateAuthorityCertificateWritten(
             CertificateAuthorityCertificateWritten {
@@ -128,14 +144,19 @@ pub struct ServerCertificateCreation {
 }
 
 impl ServerCertificateCreation {
-    fn execute(self) -> Result<ClaviFaberResponse> {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
         let certificate_authority =
             TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
-        let issuer = CertificateAuthorityIssuer::from_keygrip(self.certificate_authority_keygrip);
-        let server_certificate = issuer.server_certificate(
-            &certificate_authority,
-            ServerCertificateSigningRequest::new(self.common_name),
-        )?;
+        let server_certificate = runtime
+            .certificate_issuer
+            .ask(IssueServerCertificate {
+                keygrip: self.certificate_authority_keygrip,
+                certificate_authority,
+                request: ServerCertificateSigningRequest::new(self.common_name),
+            })
+            .await
+            .map_err(translate_send_error)?;
         ServerCertificateFiles {
             certificate: TextFile::from_path(&self.output_certificate),
             private_key: TextFile::from_path(&self.output_private_key),
@@ -160,16 +181,24 @@ pub struct NodeCertificateCreation {
 }
 
 impl NodeCertificateCreation {
-    fn execute(self) -> Result<ClaviFaberResponse> {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
         let certificate_authority =
             TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
         let subject_public_key_info =
             OpenSshPublicKey::from_text(self.open_ssh_public_key)?.subject_public_key_info()?;
-        let issuer = CertificateAuthorityIssuer::from_keygrip(self.certificate_authority_keygrip);
-        let certificate = issuer.node_certificate(
-            &certificate_authority,
-            NodeCertificateSigningRequest::new(self.common_name, subject_public_key_info),
-        )?;
+        let certificate = runtime
+            .certificate_issuer
+            .ask(IssueNodeCertificate {
+                keygrip: self.certificate_authority_keygrip,
+                certificate_authority,
+                request: NodeCertificateSigningRequest::new(
+                    self.common_name,
+                    subject_public_key_info,
+                ),
+            })
+            .await
+            .map_err(translate_send_error)?;
         TextFile::from_path(&self.output).write_public(&certificate.to_pem()?)?;
         Ok(ClaviFaberResponse::NodeCertificateWritten(
             NodeCertificateWritten {
@@ -241,11 +270,19 @@ pub struct CertificateVerification {
 }
 
 impl CertificateVerification {
-    fn execute(self) -> Result<ClaviFaberResponse> {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
         let certificate_authority =
             TextFile::from_path(&self.certificate_authority_certificate).read_certificate()?;
         let certificate = TextFile::from_path(&self.certificate).read_certificate()?;
-        CertificateChain::from_certificates(&certificate_authority, &certificate).verify()?;
+        runtime
+            .certificate_issuer
+            .ask(VerifyCertificateChain {
+                certificate_authority,
+                certificate,
+            })
+            .await
+            .map_err(translate_send_error)?;
         Ok(ClaviFaberResponse::CertificateChainVerified(
             CertificateChainVerified {
                 certificate: self.certificate,
@@ -337,36 +374,6 @@ impl<'argument> CommandLineArgument<'argument> {
 
     fn starts_inline_record(&self) -> bool {
         self.argument.to_string_lossy().starts_with('(')
-    }
-}
-
-struct GpgEd25519PublicKey {
-    keygrip: String,
-}
-
-impl GpgEd25519PublicKey {
-    fn from_keygrip(keygrip: &str) -> Self {
-        Self {
-            keygrip: keygrip.to_string(),
-        }
-    }
-
-    fn bytes(&self) -> Result<Vec<u8>> {
-        let output = std::process::Command::new("gpg")
-            .args(["--batch", "--export-ssh-key", &format!("{}!", self.keygrip)])
-            .output()
-            .map_err(|error| Error::Gpg(format!("gpg --export-ssh-key: {error}")))?;
-
-        if output.status.success() {
-            let open_ssh_public_key_text =
-                String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !open_ssh_public_key_text.is_empty() {
-                return OpenSshPublicKey::from_text(open_ssh_public_key_text)?.raw_key_bytes();
-            }
-        }
-
-        let mut agent = GpgAgent::connect()?;
-        agent.readkey(&self.keygrip)
     }
 }
 

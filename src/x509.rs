@@ -1,5 +1,4 @@
 use crate::error::{Error, Result};
-use crate::gpg_agent::GpgAgent;
 use const_oid::db::rfc5280::{
     ID_CE_BASIC_CONSTRAINTS, ID_CE_KEY_USAGE, ID_CE_SUBJECT_KEY_IDENTIFIER,
 };
@@ -74,27 +73,27 @@ impl Ed25519SubjectPublicKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertificateAuthorityIssuer {
-    keygrip: String,
-}
+pub struct CertificateAuthorityIssuer;
 
 impl CertificateAuthorityIssuer {
-    pub fn from_keygrip(keygrip: impl Into<String>) -> Self {
-        Self {
-            keygrip: keygrip.into(),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
-    pub fn self_signed_certificate(
+    pub async fn self_signed_certificate<F, Fut>(
         &self,
         request: CertificateAuthorityCertificateRequest,
-    ) -> Result<CertificateDer> {
+        signer: F,
+    ) -> Result<CertificateDer>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<u8>>>,
+    {
         let subject_public_key_info_der = SubjectPublicKeyInfoDer::from_subject_public_key_info(
             &request.subject_public_key_info,
         )?;
         let subject = DistinguishedName::new(&request.common_name).name()?;
-        let certificate = CertificateSigningRequest {
-            keygrip: &self.keygrip,
+        let unsigned = UnsignedCertificate {
             certificate: TbsCertificate {
                 version: x509_cert::Version::V3,
                 serial_number: subject_public_key_info_der.serial_number()?,
@@ -115,21 +114,26 @@ impl CertificateAuthorityIssuer {
                 ]),
             },
         };
-        certificate.signed_certificate()
+        let signature = signer(unsigned.hash_hex()?).await?;
+        unsigned.assemble(signature)
     }
 
-    pub fn node_certificate(
+    pub async fn node_certificate<F, Fut>(
         &self,
         certificate_authority: &CertificateDer,
         request: NodeCertificateSigningRequest,
-    ) -> Result<CertificateDer> {
+        signer: F,
+    ) -> Result<CertificateDer>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<u8>>>,
+    {
         let parsed_certificate_authority =
             certificate_authority.certificate("certificate authority")?;
         let subject_public_key_info_der = SubjectPublicKeyInfoDer::from_subject_public_key_info(
             &request.subject_public_key_info,
         )?;
-        let certificate = CertificateSigningRequest {
-            keygrip: &self.keygrip,
+        let unsigned = UnsignedCertificate {
             certificate: TbsCertificate {
                 version: x509_cert::Version::V3,
                 serial_number: subject_public_key_info_der.serial_number()?,
@@ -150,22 +154,27 @@ impl CertificateAuthorityIssuer {
                 ]),
             },
         };
-        certificate.signed_certificate()
+        let signature = signer(unsigned.hash_hex()?).await?;
+        unsigned.assemble(signature)
     }
 
-    pub fn server_certificate(
+    pub async fn server_certificate<F, Fut>(
         &self,
         certificate_authority: &CertificateDer,
         request: ServerCertificateSigningRequest,
-    ) -> Result<ServerCertificate> {
+        signer: F,
+    ) -> Result<ServerCertificate>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<u8>>>,
+    {
         let parsed_certificate_authority =
             certificate_authority.certificate("certificate authority")?;
         let server_key_pair = ServerKeyPair::generate();
         let subject_public_key_info = server_key_pair.subject_public_key_info()?;
         let subject_public_key_info_der =
             SubjectPublicKeyInfoDer::from_subject_public_key_info(&subject_public_key_info)?;
-        let certificate = CertificateSigningRequest {
-            keygrip: &self.keygrip,
+        let unsigned = UnsignedCertificate {
             certificate: TbsCertificate {
                 version: x509_cert::Version::V3,
                 serial_number: subject_public_key_info_der.serial_number()?,
@@ -186,11 +195,17 @@ impl CertificateAuthorityIssuer {
                 ]),
             },
         };
-
+        let signature = signer(unsigned.hash_hex()?).await?;
         Ok(ServerCertificate {
-            certificate: certificate.signed_certificate()?,
+            certificate: unsigned.assemble(signature)?,
             private_key_pem: server_key_pair.private_key_pem()?,
         })
+    }
+}
+
+impl Default for CertificateAuthorityIssuer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -502,18 +517,21 @@ impl KeyUsage {
     }
 }
 
-struct CertificateSigningRequest<'request> {
-    keygrip: &'request str,
+struct UnsignedCertificate {
     certificate: TbsCertificate,
 }
 
-impl<'request> CertificateSigningRequest<'request> {
-    fn signed_certificate(self) -> Result<CertificateDer> {
+impl UnsignedCertificate {
+    fn hash_hex(&self) -> Result<String> {
         let certificate_der = self
             .certificate
             .to_der()
             .map_err(|error| Error::Certificate(format!("TBS encode: {error}")))?;
-        let signature = GpgSignatureRequest::new(self.keygrip, &certificate_der).signature()?;
+        let hash = Sha256::digest(&certificate_der);
+        Ok(hex::encode(hash))
+    }
+
+    fn assemble(self, signature: Vec<u8>) -> Result<CertificateDer> {
         let certificate = Certificate {
             tbs_certificate: self.certificate,
             signature_algorithm: AlgorithmIdentifierOwned {
@@ -527,27 +545,6 @@ impl<'request> CertificateSigningRequest<'request> {
             .to_der()
             .map_err(|error| Error::Certificate(format!("cert encode: {error}")))?;
         Ok(CertificateDer::from_bytes(bytes))
-    }
-}
-
-struct GpgSignatureRequest<'request> {
-    keygrip: &'request str,
-    certificate_der: &'request [u8],
-}
-
-impl<'request> GpgSignatureRequest<'request> {
-    fn new(keygrip: &'request str, certificate_der: &'request [u8]) -> Self {
-        Self {
-            keygrip,
-            certificate_der,
-        }
-    }
-
-    fn signature(&self) -> Result<Vec<u8>> {
-        let hash = Sha256::digest(self.certificate_der);
-        let hash_hex = hex::encode(hash);
-        let mut agent = GpgAgent::connect()?;
-        agent.sign(self.keygrip, &hash_hex)
     }
 }
 
