@@ -86,13 +86,20 @@ async fn public_key_derivation_runs_host_identity_then_ssh_host_key() {
     let trace = fixture.trace().await;
     let load_position = trace
         .iter()
-        .position(|event| event.actor == "HostIdentity"
-            && matches!(event.kind, TraceKind::MessageReceived("LoadIdentity")))
+        .position(|event| {
+            event.actor == "HostIdentity"
+                && matches!(event.kind, TraceKind::MessageReceived("LoadIdentity"))
+        })
         .expect("HostIdentity.LoadIdentity received");
     let write_position = trace
         .iter()
-        .position(|event| event.actor == "SshHostKey"
-            && matches!(event.kind, TraceKind::MessageReceived("WritePublicKeyProjection")))
+        .position(|event| {
+            event.actor == "SshHostKey"
+                && matches!(
+                    event.kind,
+                    TraceKind::MessageReceived("WritePublicKeyProjection")
+                )
+        })
         .expect("SshHostKey.WritePublicKeyProjection received");
     assert!(
         load_position < write_position,

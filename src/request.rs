@@ -3,6 +3,7 @@ use crate::actors::certificate_issuer::{
 };
 use crate::actors::gpg_agent_session::ReadEd25519PublicKey;
 use crate::actors::host_identity::{EnsureIdentity, LoadIdentity};
+use crate::actors::publication_collector::CollectPublication;
 use crate::actors::runtime_root::RuntimeRoot;
 use crate::actors::ssh_host_key::WritePublicKeyProjection;
 use crate::actors::translate_send_error;
@@ -27,6 +28,7 @@ pub enum ClaviFaberRequest {
     PublicKeyDerivation(PublicKeyDerivation),
     CertificateVerification(CertificateVerification),
     PublicKeyPublicationRequest(PublicKeyPublicationRequest),
+    Converge(Converge),
 }
 
 impl ClaviFaberRequest {
@@ -60,6 +62,7 @@ impl ClaviFaberRequest {
             Self::PublicKeyPublicationRequest(request) => Ok(
                 ClaviFaberResponse::PublicKeyPublication(request.collect().await?),
             ),
+            Self::Converge(request) => request.execute().await,
         }
     }
 }
@@ -72,6 +75,7 @@ pub enum ClaviFaberResponse {
     PublicKeyProjection(PublicKeyProjection),
     CertificateChainVerified(CertificateChainVerified),
     PublicKeyPublication(PublicKeyPublication),
+    ConvergenceComplete(ConvergenceComplete),
 }
 
 impl ClaviFaberResponse {
@@ -315,6 +319,56 @@ pub struct PublicKeyProjection {
 #[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
 pub struct CertificateChainVerified {
     pub certificate: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct Converge {
+    pub identity_directory: String,
+    pub node_name: String,
+    pub publication_output: String,
+    pub yggdrasil_address: Option<String>,
+    pub yggdrasil_public_key: Option<String>,
+    pub wifi_client_certificate_pem: Option<String>,
+}
+
+impl Converge {
+    async fn execute(self) -> Result<ClaviFaberResponse> {
+        let runtime = RuntimeRoot::start(None);
+        let directory = PathBuf::from(self.identity_directory);
+        runtime
+            .host_identity
+            .ask(EnsureIdentity {
+                directory: directory.clone(),
+            })
+            .await
+            .map_err(translate_send_error)?;
+        let publication = runtime
+            .publication_collector
+            .ask(CollectPublication {
+                node_name: self.node_name,
+                directory,
+                yggdrasil_address: self.yggdrasil_address,
+                yggdrasil_public_key: self.yggdrasil_public_key,
+                wifi_client_certificate_pem: self.wifi_client_certificate_pem,
+            })
+            .await
+            .map_err(translate_send_error)?;
+        let mut encoder = Encoder::new();
+        publication.encode(&mut encoder)?;
+        let publication_text = encoder.into_string();
+        AtomicFile::new(PathBuf::from(&self.publication_output))
+            .write_bytes(publication_text.as_bytes(), 0o644)?;
+        Ok(ClaviFaberResponse::ConvergenceComplete(
+            ConvergenceComplete {
+                publication_output: self.publication_output,
+            },
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+pub struct ConvergenceComplete {
+    pub publication_output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
