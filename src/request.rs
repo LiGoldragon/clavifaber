@@ -192,12 +192,21 @@ pub struct CertificateAuthorityCertificateWritten {
 impl CertificateAuthorityIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
         let output_path = PathBuf::from(&self.output);
-        if output_path.exists() {
-            return Ok(ClaviFaberResponse::CertificateAuthorityCertificateWritten(
-                CertificateAuthorityCertificateWritten {
-                    output: self.output,
-                },
-            ));
+        match existing_certificate_file(&output_path)? {
+            ExistingCertificateFile::Absent => {}
+            ExistingCertificateFile::Valid => {
+                return Ok(ClaviFaberResponse::CertificateAuthorityCertificateWritten(
+                    CertificateAuthorityCertificateWritten {
+                        output: self.output,
+                    },
+                ));
+            }
+            ExistingCertificateFile::Unparseable(detail) => {
+                return Err(Error::Certificate(format!(
+                    "{} exists but is not a parseable certificate ({detail}); refusing to silently overwrite — delete the file (or `mv {0}.bad`) to force re-issue",
+                    output_path.display()
+                )));
+            }
         }
         let runtime = RuntimeRoot::start(None);
         let public_key_bytes = runtime
@@ -253,13 +262,46 @@ impl ServerCertificateIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
         let certificate_path = PathBuf::from(&self.output_certificate);
         let private_key_path = PathBuf::from(&self.output_private_key);
-        if certificate_path.exists() && private_key_path.exists() {
-            return Ok(ClaviFaberResponse::ServerCertificateWritten(
-                ServerCertificateWritten {
-                    certificate: self.output_certificate,
-                    private_key: self.output_private_key,
-                },
-            ));
+        match (
+            existing_certificate_file(&certificate_path)?,
+            existing_private_key_file(&private_key_path)?,
+        ) {
+            (ExistingCertificateFile::Valid, ExistingPrivateKeyFile::Valid) => {
+                return Ok(ClaviFaberResponse::ServerCertificateWritten(
+                    ServerCertificateWritten {
+                        certificate: self.output_certificate,
+                        private_key: self.output_private_key,
+                    },
+                ));
+            }
+            (ExistingCertificateFile::Absent, ExistingPrivateKeyFile::Absent) => {}
+            // Order matters: an unparseable existing file is a more
+            // specific symptom than half-existence. Diagnose it
+            // first so the operator gets the right reason.
+            (ExistingCertificateFile::Unparseable(detail), _) => {
+                return Err(Error::Certificate(format!(
+                    "{} exists but is not a parseable certificate ({detail}); refusing to silently overwrite — delete BOTH cert and key files to force re-issue",
+                    certificate_path.display()
+                )));
+            }
+            (_, ExistingPrivateKeyFile::Unparseable(detail)) => {
+                return Err(Error::Certificate(format!(
+                    "{} exists but is not a parseable private key ({detail}); refusing to silently overwrite — delete BOTH cert and key files to force re-issue",
+                    private_key_path.display()
+                )));
+            }
+            // Half-existence: refuse to re-issue. A fresh server cert
+            // mints a fresh EC private key; if the operator deleted
+            // one file but not the other, re-issuing silently rotates
+            // the EC keypair (anyone who trusted the old public key
+            // breaks). Surface and let the operator decide.
+            (ExistingCertificateFile::Valid, _) | (_, ExistingPrivateKeyFile::Valid) => {
+                return Err(Error::Certificate(format!(
+                    "{} and {} half-exist; refusing to re-issue (would lose the surviving file's keypair). Delete BOTH files to force re-issue, or restore the missing one from backup",
+                    certificate_path.display(),
+                    private_key_path.display()
+                )));
+            }
         }
         let runtime = RuntimeRoot::start(None);
         let certificate_authority =
@@ -305,12 +347,21 @@ pub struct ClientCertificateWritten {
 impl ClientCertificateIssuance {
     async fn execute(self) -> Result<ClaviFaberResponse> {
         let output_path = PathBuf::from(&self.output);
-        if output_path.exists() {
-            return Ok(ClaviFaberResponse::ClientCertificateWritten(
-                ClientCertificateWritten {
-                    output: self.output,
-                },
-            ));
+        match existing_certificate_file(&output_path)? {
+            ExistingCertificateFile::Absent => {}
+            ExistingCertificateFile::Valid => {
+                return Ok(ClaviFaberResponse::ClientCertificateWritten(
+                    ClientCertificateWritten {
+                        output: self.output,
+                    },
+                ));
+            }
+            ExistingCertificateFile::Unparseable(detail) => {
+                return Err(Error::Certificate(format!(
+                    "{} exists but is not a parseable certificate ({detail}); refusing to silently overwrite — delete the file to force re-issue",
+                    output_path.display()
+                )));
+            }
         }
         let runtime = RuntimeRoot::start(None);
         let certificate_authority =
@@ -511,6 +562,61 @@ fn read_certificate(path: &Path) -> Result<CertificateDer> {
         source,
     })?;
     CertificateDer::from_pem(&pem)
+}
+
+/// Three-state classification of an on-disk certificate file: absent,
+/// parseable, or present-but-unparseable. Per report 112: the cert
+/// handlers' skip path used bare `Path::exists()`, which silently
+/// passed a truncated / garbage file as "valid". This refines that.
+enum ExistingCertificateFile {
+    Absent,
+    Valid,
+    Unparseable(String),
+}
+
+fn existing_certificate_file(path: &Path) -> Result<ExistingCertificateFile> {
+    if !path.exists() {
+        return Ok(ExistingCertificateFile::Absent);
+    }
+    let pem = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    match CertificateDer::from_pem(&pem) {
+        Ok(_) => Ok(ExistingCertificateFile::Valid),
+        Err(error) => Ok(ExistingCertificateFile::Unparseable(error.to_string())),
+    }
+}
+
+/// Three-state classification of an on-disk private-key file: absent,
+/// looks-like-a-private-key-PEM, or present-but-not-PEM. The check is
+/// shallow (we only verify PEM shape, not algorithm) — enough to
+/// distinguish "operator put garbage here" from "the file is a real
+/// private key clavifaber should leave alone."
+enum ExistingPrivateKeyFile {
+    Absent,
+    Valid,
+    Unparseable(String),
+}
+
+fn existing_private_key_file(path: &Path) -> Result<ExistingPrivateKeyFile> {
+    if !path.exists() {
+        return Ok(ExistingPrivateKeyFile::Absent);
+    }
+    let content = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let has_begin = content.contains("-----BEGIN ");
+    let has_end = content.contains("-----END ");
+    let mentions_private_key = content.contains("PRIVATE KEY");
+    if has_begin && has_end && mentions_private_key {
+        Ok(ExistingPrivateKeyFile::Valid)
+    } else {
+        Ok(ExistingPrivateKeyFile::Unparseable(
+            "file is not a PEM private-key block".to_string(),
+        ))
+    }
 }
 
 fn write_server_certificate(

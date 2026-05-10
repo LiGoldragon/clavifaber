@@ -18,17 +18,87 @@ impl IdentityDirectory {
         Self { path }
     }
 
+    /// Resolve the on-disk identity if one is present and usable.
+    ///
+    /// Three on-disk states distinguished:
+    ///
+    /// - **Absent** (no `key.pem`): return `Ok(None)`; caller
+    ///   generates a fresh identity.
+    /// - **Present and corrupt** — content is not a parseable PEM
+    ///   block at all (no `-----BEGIN ... -----` markers): rename to
+    ///   `key.pem.broken.<unix-seconds>` and return `Ok(None)`. Caller
+    ///   generates a fresh identity. The broken file is preserved
+    ///   for forensic inspection. This is the conservative case —
+    ///   the file is clearly not a usable key.
+    /// - **Present and structured but not ours** — content parses
+    ///   as PEM with the wrong label, or as PKCS#8 with the wrong
+    ///   algorithm: return `Err(Error::Corrupt {..})`. **Do not
+    ///   quarantine.** Refusing to overwrite a structurally-typed
+    ///   file we don't recognise lets an operator investigate
+    ///   instead of having the host's identity silently rotated by
+    ///   a parser disagreement.
     pub fn existing_identity(&self) -> Result<Option<NodeIdentity>> {
-        if !self.private_key_path().exists() {
+        let private_key_path = self.private_key_path();
+        if !private_key_path.exists() {
             return Ok(None);
         }
 
-        match self.load_identity() {
-            Ok(identity) => Ok(Some(identity)),
-            Err(error) => {
-                self.quarantine_broken_identity(&error)?;
+        let private_key_pem =
+            fs::read_to_string(&private_key_path).map_err(|source| Error::Io {
+                path: private_key_path.clone(),
+                source,
+            })?;
+
+        match Self::classify_existing_private_key(&private_key_pem) {
+            ExistingPrivateKey::Usable => {
+                NodeIdentity::from_private_key_pem(&private_key_pem, &private_key_path).map(Some)
+            }
+            ExistingPrivateKey::Garbage(detail) => {
+                self.quarantine_broken_identity(&detail)?;
                 Ok(None)
             }
+            ExistingPrivateKey::StructuredButNotOurs(detail) => Err(Error::Corrupt {
+                path: private_key_path,
+                detail,
+            }),
+        }
+    }
+
+    /// Decide which on-disk-state bucket the bytes fall into.
+    ///
+    /// We do a cheap PEM-shape check (`-----BEGIN ... -----` /
+    /// `-----END ... -----`) and only quarantine when the content
+    /// is **clearly not a PEM block at all**. PEM blocks with the
+    /// wrong label, or with body bytes that don't decode as
+    /// Ed25519 PKCS#8, get the "structured but not ours" verdict —
+    /// the caller refuses to overwrite. This narrows the
+    /// quarantine path so a transient parser disagreement on a
+    /// good key can't silently rotate the host's identity (per
+    /// report 112).
+    fn classify_existing_private_key(content: &str) -> ExistingPrivateKey {
+        let trimmed = content.trim_start_matches('\u{feff}');
+        let has_begin = trimmed.contains("-----BEGIN ");
+        let has_end = trimmed.contains("-----END ");
+        if !has_begin || !has_end {
+            return ExistingPrivateKey::Garbage("private key file is not a PEM block".to_string());
+        }
+
+        // PEM-shaped. Find the label and decide.
+        let label = pem_label(trimmed);
+        if label.as_deref() != Some("PRIVATE KEY") {
+            return ExistingPrivateKey::StructuredButNotOurs(format!(
+                "private key file PEM label is {:?}, expected \"PRIVATE KEY\"",
+                label.unwrap_or_default()
+            ));
+        }
+
+        // PEM with right label. The PKCS#8 parse will reject if the
+        // algorithm is wrong; surface that as StructuredButNotOurs.
+        match SigningKey::from_pkcs8_pem(content) {
+            Ok(_) => ExistingPrivateKey::Usable,
+            Err(error) => ExistingPrivateKey::StructuredButNotOurs(format!(
+                "PEM body is not Ed25519 PKCS#8: {error}"
+            )),
         }
     }
 
@@ -73,7 +143,7 @@ impl IdentityDirectory {
         self.path.join("key.pem")
     }
 
-    fn quarantine_broken_identity(&self, error: &Error) -> Result<()> {
+    fn quarantine_broken_identity(&self, detail: &str) -> Result<()> {
         let private_key_path = self.private_key_path();
         let seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -84,14 +154,14 @@ impl IdentityDirectory {
             Error::Corrupt {
                 path: private_key_path.clone(),
                 detail: format!(
-                    "{error}; rename to {} failed: {source}",
+                    "{detail}; rename to {} failed: {source}",
                     broken_private_key_path.display()
                 ),
             }
         })?;
 
         eprintln!(
-            "warning: corrupt key renamed to {} ({error})",
+            "warning: corrupt key renamed to {} ({detail})",
             broken_private_key_path.display()
         );
 
@@ -105,6 +175,25 @@ impl IdentityDirectory {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExistingPrivateKey {
+    /// PEM-shaped, "PRIVATE KEY" label, parseable as Ed25519 PKCS#8.
+    Usable,
+    /// Not a PEM block. Safe to quarantine and regenerate; nothing
+    /// structural to preserve.
+    Garbage(String),
+    /// PEM-shaped but the wrong label, or PEM with the right label
+    /// but decode fails. Refuse to overwrite — surface the error.
+    StructuredButNotOurs(String),
+}
+
+fn pem_label(content: &str) -> Option<String> {
+    let begin = content.find("-----BEGIN ")?;
+    let after_begin = &content[begin + "-----BEGIN ".len()..];
+    let end_of_label = after_begin.find("-----")?;
+    Some(after_begin[..end_of_label].to_string())
 }
 
 #[derive(Debug)]

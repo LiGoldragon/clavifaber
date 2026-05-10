@@ -68,7 +68,9 @@ echo "    OpenSshPublicKeyDerivation: OK (matches)"
 echo ""
 echo "--- Phase 3: CertificateAuthorityIssuance ---"
 CA_CERTIFICATE="$TEST_DIRECTORY/ca.pem"
-"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance $KEYGRIP \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
+# Keygrip is hex-only and may start with a digit; quote so NOTA reads
+# it as a string, not as an Int that stops at the first non-digit.
+"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance \"$KEYGRIP\" \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
 
 if [ ! -s "$CA_CERTIFICATE" ]; then
   echo "FAIL: CA cert not created"
@@ -87,7 +89,7 @@ echo "    CA:TRUE constraint: OK"
 
 # Idempotency on CA: re-issuance is a no-op (file already exists).
 CA_BEFORE=$(cat "$CA_CERTIFICATE")
-"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance $KEYGRIP \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance \"$KEYGRIP\" \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
 CA_AFTER=$(cat "$CA_CERTIFICATE")
 if [ "$CA_BEFORE" != "$CA_AFTER" ]; then
   echo "FAIL: CA cert was re-issued instead of skipped"
@@ -99,7 +101,7 @@ echo ""
 echo "--- Phase 4: ServerCertificateIssuance ---"
 SERVER_CERTIFICATE="$TEST_DIRECTORY/server.pem"
 SERVER_PRIVATE_KEY="$TEST_DIRECTORY/server.key"
-"${CLAVIFABER[@]}" "(ServerCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"faber.criome\" \"$SERVER_CERTIFICATE\" \"$SERVER_PRIVATE_KEY\")" >/dev/null
+"${CLAVIFABER[@]}" "(ServerCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"faber.criome\" \"$SERVER_CERTIFICATE\" \"$SERVER_PRIVATE_KEY\")" >/dev/null
 
 if [ ! -s "$SERVER_CERTIFICATE" ] || [ ! -s "$SERVER_PRIVATE_KEY" ]; then
   echo "FAIL: server cert/key not created"
@@ -114,7 +116,7 @@ echo "    verify chain: OK"
 echo ""
 echo "--- Phase 5: ClientCertificateIssuance ---"
 NODE_CERTIFICATE="$TEST_DIRECTORY/probus.pem"
-"${CLAVIFABER[@]}" "(ClientCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"$NODE_SSH_PUBLIC_KEY\" \"probus@aedifico\" \"$NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "(ClientCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"$NODE_SSH_PUBLIC_KEY\" \"probus@aedifico\" \"$NODE_CERTIFICATE\")" >/dev/null
 
 if [ ! -s "$NODE_CERTIFICATE" ]; then
   echo "FAIL: node cert not created"
@@ -158,7 +160,7 @@ SECOND_NODE_DIRECTORY="$TEST_DIRECTORY/identity-faber"
 SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh.pub")
 
 SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
-"${CLAVIFABER[@]}" "(ClientCertificateIssuance $KEYGRIP \"$CA_CERTIFICATE\" \"$SECOND_NODE_SSH_PUBLIC_KEY\" \"faber@aedifico\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "(ClientCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"$SECOND_NODE_SSH_PUBLIC_KEY\" \"faber@aedifico\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
 
 "${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
 echo "    second node cert verified: OK"

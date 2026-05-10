@@ -117,17 +117,31 @@ a smell — name the witness first or move the constraint to a report.
 | `GpgAgentSession`'s mailbox stays responsive during gpg-agent IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each gpg call. |
 | `YggdrasilKey`'s mailbox stays responsive during yggdrasil-binary IO. | Code-shape claim: `Reply = DelegatedReply<R>` + `tokio::task::spawn_blocking` for each yggdrasil invocation. |
 
-### Per-handler idempotency
+### Per-handler idempotency (parse-before-skip)
+
+The skip path **parses** the existing output rather than just checking
+existence. Per report 112 (existing-host integration audit): a bare
+`.exists()` check silently passes a truncated / garbage file as "valid"
+and lets clavifaber skip when it shouldn't. The cert handlers refuse to
+silently overwrite structurally-typed cryptographic material when the
+existing file is unparseable.
 
 | Constraint | Witness |
 |---|---|
 | `IdentitySetup` is idempotent: re-running preserves the on-disk private key. | `tests/identity_directory_lifecycle.rs::identity_setup_preserves_existing_identity`. |
-| `IdentitySetup` quarantines a corrupt private key before regeneration. | `tests/identity_directory_lifecycle.rs::identity_setup_quarantines_corrupt_private_key_before_replacement`. |
+| `IdentitySetup` quarantines a corrupt private key (file is not even PEM) before regeneration. | `tests/identity_directory_lifecycle.rs::identity_setup_quarantines_corrupt_private_key_before_replacement`. |
+| `IdentitySetup` fails loudly (does NOT quarantine) when the existing file is structured PEM with the wrong label or wrong algorithm. | `tests/identity_directory_lifecycle.rs::identity_setup_fails_loudly_when_existing_key_is_pem_with_wrong_label`. |
 | `OpenSshPublicKeyDerivation` re-derives the public projection from the persisted private key. | `tests/identity_directory_lifecycle.rs::open_ssh_public_key_derivation_restores_public_projection_from_private_key`. |
 | `OpenSshPublicKeyDerivation` fails when no private key is present. | `tests/identity_directory_lifecycle.rs::open_ssh_public_key_derivation_fails_when_private_key_is_absent`. |
-| `CertificateAuthorityIssuance` skips when the output file already exists (no CA read, no gpg-agent traffic). | `tests/issuance_idempotency.rs::certificate_authority_issuance_skips_when_output_exists` (bogus keygrip succeeds via skip path). |
-| `ServerCertificateIssuance` skips when both output files exist. | `tests/issuance_idempotency.rs::server_certificate_issuance_skips_when_output_files_exist`. |
-| `ClientCertificateIssuance` skips when the output file exists. | `tests/issuance_idempotency.rs::client_certificate_issuance_skips_when_output_exists`. |
+| `CertificateAuthorityIssuance` skips when the output is a valid PEM certificate. | `tests/issuance_idempotency.rs::certificate_authority_issuance_skips_when_output_is_valid_cert`. |
+| `CertificateAuthorityIssuance` fails loudly when the output exists but is unparseable. | `tests/issuance_idempotency.rs::certificate_authority_issuance_fails_loudly_when_output_unparseable`. |
+| `ServerCertificateIssuance` skips when both output files are valid. | `tests/issuance_idempotency.rs::server_certificate_issuance_skips_when_output_files_are_valid`. |
+| `ServerCertificateIssuance` fails loudly when the certificate file is unparseable. | `tests/issuance_idempotency.rs::server_certificate_issuance_fails_loudly_when_cert_unparseable`. |
+| `ServerCertificateIssuance` fails loudly when the private-key file is unparseable. | `tests/issuance_idempotency.rs::server_certificate_issuance_fails_loudly_when_key_unparseable`. |
+| `ServerCertificateIssuance` fails loudly on half-existence (cert present without key). | `tests/issuance_idempotency.rs::server_certificate_issuance_fails_loudly_on_half_existence_cert_present`. |
+| `ServerCertificateIssuance` fails loudly on half-existence (key present without cert). | `tests/issuance_idempotency.rs::server_certificate_issuance_fails_loudly_on_half_existence_key_present`. |
+| `ClientCertificateIssuance` skips when the output is a valid PEM certificate. | `tests/issuance_idempotency.rs::client_certificate_issuance_skips_when_output_is_valid_cert`. |
+| `ClientCertificateIssuance` fails loudly when the output exists but is unparseable. | `tests/issuance_idempotency.rs::client_certificate_issuance_fails_loudly_when_output_unparseable`. |
 | `YggdrasilKeypairSetup` is idempotent: re-running preserves the keypair file. | `scripts/test-pki-lifecycle` Phase 8 (compares keypair bytes before / after re-run). |
 
 ### Certificate validity

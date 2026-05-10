@@ -254,3 +254,53 @@ fn open_ssh_public_key_derivation_fails_when_private_key_is_absent() {
         "OpenSshPublicKeyDerivation should fail without private key"
     );
 }
+
+#[test]
+fn identity_setup_fails_loudly_when_existing_key_is_pem_with_wrong_label() {
+    // A perfectly-PEM-shaped file with the WRONG label (say, a
+    // CERTIFICATE block) must NOT be quarantined-and-replaced —
+    // that's the dangerous silent-rotation path report 112 named.
+    // Instead clavifaber surfaces an error and refuses to overwrite.
+    // Operator decides what to do.
+    let fixture = CliFixture::new();
+    let identity_directory = fixture.identity_directory("identity");
+    fs::create_dir_all(&identity_directory).expect("create identity dir");
+    fs::write(
+        identity_directory.join("key.pem"),
+        "-----BEGIN CERTIFICATE-----\nDEFINITELYNOTAPRIVATEKEY\n-----END CERTIFICATE-----\n",
+    )
+    .expect("seed wrong-label PEM");
+
+    let output = fixture.identity_setup(&identity_directory);
+
+    assert!(
+        !output.status.success(),
+        "structured-but-not-ours PEM must fail loudly, not silently quarantine + replace"
+    );
+    let stderr = stderr_text(&output);
+    assert!(
+        stderr.contains("PRIVATE KEY") || stderr.contains("corrupt"),
+        "error message must explain the structural mismatch; got: {stderr}"
+    );
+
+    // The file is untouched — not quarantined, not overwritten.
+    let on_disk = fs::read_to_string(identity_directory.join("key.pem")).expect("read key.pem");
+    assert!(
+        on_disk.contains("DEFINITELYNOTAPRIVATEKEY"),
+        "structured-but-not-ours file was modified despite the loud-fail policy"
+    );
+    let broken_count = fs::read_dir(&identity_directory)
+        .expect("read identity dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("key.pem.broken.")
+        })
+        .count();
+    assert_eq!(
+        broken_count, 0,
+        "structured-but-not-ours file must NOT be quarantined"
+    );
+}

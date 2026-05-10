@@ -108,23 +108,68 @@ supervision is part of the design), read
 
 ## Idempotency
 
-Each request handler is idempotent on disk-existence:
+Each request handler is idempotent on disk-existence, with parse-
+before-skip for cryptographic outputs:
 
-- `IdentitySetup`: load if `key.pem` exists; else generate. Quarantine
-  if corrupt.
+- `IdentitySetup`: load if `key.pem` exists and parses as Ed25519
+  PKCS#8; quarantine to `key.pem.broken.<unix-seconds>` if not even
+  a PEM block; **fail loudly** (don't quarantine) if the file is
+  structured PEM but the wrong label or wrong algorithm. Generate
+  fresh if absent.
 - `OpenSshPublicKeyDerivation`: regenerate `ssh.pub` from the loaded
   identity (always fresh; cheap).
-- `CertificateAuthorityIssuance`: skip if output file exists.
-- `ServerCertificateIssuance`: skip if both output files exist.
-- `ClientCertificateIssuance`: skip if output file exists.
+- `CertificateAuthorityIssuance`: skip if output parses as a PEM
+  certificate; **fail loudly** if the output exists but doesn't
+  parse.
+- `ServerCertificateIssuance`: skip if both output files parse;
+  **fail loudly** on any unparseable file or half-existence (a fresh
+  issuance mints a new EC keypair and would silently rotate; operator
+  must decide).
+- `ClientCertificateIssuance`: skip if output parses as a PEM
+  certificate; **fail loudly** if the output exists but doesn't
+  parse.
 - `YggdrasilKeypairSetup`: skip if keypair file exists.
 - `PublicKeyPublicationWriting`: always re-assemble + atomically write.
   (No skip; the publication is cheap to re-derive.)
 - `CertificateChainVerification`: read-only; always runs.
 
+The loud-fail policy means a re-deploy with stale/corrupt cryptographic
+material doesn't silently rotate the host's identity. Operators get a
+typed error explaining why; the fix is to `rm` the offending file (or
+restore from backup) and re-run.
+
 Idempotency is the orchestrator's contract: re-running clavifaber after
 a successful run is a fast no-op for everything except the publication
 write.
+
+## Operator override (CriomOS)
+
+CriomOS's `complex-init` systemd unit has
+`unitConfig.ConditionPathExists = "!${dir}/.disabled"`. To lock
+clavifaber out of a specific host (e.g., the identity is managed
+out-of-band, HSM-backed, or being investigated for a corruption
+incident):
+
+```sh
+touch /etc/criomOS/complex/.disabled
+```
+
+The unit becomes a no-op. Removing the sentinel re-enables runs.
+
+## Force-rotate
+
+There is no `--force` flag. To force re-issuance of a specific
+artifact:
+
+```sh
+mv /etc/criomOS/complex/server.pem /etc/criomOS/complex/server.pem.retired
+mv /etc/criomOS/complex/server.key /etc/criomOS/complex/server.key.retired
+# next clavifaber ServerCertificateIssuance run: re-issues both
+```
+
+For the SSH host identity, the same shape with `key.pem` + `ssh.pub`
+(both must move together; clavifaber treats half-existence as an
+error per the loud-fail policy).
 
 ## Nix and tests
 
