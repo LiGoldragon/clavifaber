@@ -169,4 +169,51 @@ SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
 echo "    second node cert verified: OK"
 
 echo ""
+echo "--- Phase 8: Converge runs the full plan in one NOTA call ---"
+CONVERGE_DIRECTORY="$TEST_DIRECTORY/identity-converge"
+CONVERGE_PUBLICATION="$TEST_DIRECTORY/converge-publication.nota"
+CONVERGE_STATE="$TEST_DIRECTORY/converge-clavifaber.redb"
+CONVERGE_CA="$TEST_DIRECTORY/converge-ca.pem"
+CONVERGE_SERVER_CERT="$TEST_DIRECTORY/converge-server.pem"
+CONVERGE_SERVER_KEY="$TEST_DIRECTORY/converge-server.key"
+CONVERGE_NODE_CERT="$TEST_DIRECTORY/converge-node.pem"
+
+"${CLAVIFABER[@]}" complex-init --dir "$CONVERGE_DIRECTORY" >/dev/null
+CONVERGE_NODE_SSH_PUBLIC_KEY=$(cat "$CONVERGE_DIRECTORY/ssh.pub")
+
+CONVERGE_PLAN=$(cat <<EOF
+(Converge "$CONVERGE_DIRECTORY" probus "$CONVERGE_PUBLICATION" None None None "$CONVERGE_STATE" (CertificateAuthorityPlan "$KEYGRIP" "Aedifico Converge CA" "$CONVERGE_CA") (ServerCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "faber.converge.criome" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY") [(NodeCertificatePlan "$KEYGRIP" "$CONVERGE_CA" "$CONVERGE_NODE_SSH_PUBLIC_KEY" "probus@converge" "$CONVERGE_NODE_CERT")])
+EOF
+)
+
+CONVERGE_FIRST_REPLY=$("${CLAVIFABER[@]}" "$CONVERGE_PLAN")
+echo "    first converge reply: $CONVERGE_FIRST_REPLY"
+
+if ! echo "$CONVERGE_FIRST_REPLY" | grep -q 'true'; then
+  echo "FAIL: first converge did not record work_performed = true"
+  exit 1
+fi
+
+for required in "$CONVERGE_PUBLICATION" "$CONVERGE_STATE" "$CONVERGE_CA" "$CONVERGE_SERVER_CERT" "$CONVERGE_SERVER_KEY" "$CONVERGE_NODE_CERT"; do
+  if [ ! -s "$required" ]; then
+    echo "FAIL: converge did not produce $required"
+    exit 1
+  fi
+done
+
+"${CLAVIFABER[@]}" verify --ca-cert "$CONVERGE_CA" --cert "$CONVERGE_SERVER_CERT" >/dev/null
+echo "    converged server cert verifies against converged CA: OK"
+"${CLAVIFABER[@]}" verify --ca-cert "$CONVERGE_CA" --cert "$CONVERGE_NODE_CERT" >/dev/null
+echo "    converged node cert verifies against converged CA: OK"
+
+CONVERGE_SECOND_REPLY=$("${CLAVIFABER[@]}" "$CONVERGE_PLAN")
+echo "    second converge reply: $CONVERGE_SECOND_REPLY"
+
+if ! echo "$CONVERGE_SECOND_REPLY" | grep -q 'false'; then
+  echo "FAIL: gate did not skip on identical input — work_performed must be false on rerun"
+  exit 1
+fi
+echo "    gate skipped on identical input: OK"
+
+echo ""
 echo "=== ALL TESTS PASSED ==="
