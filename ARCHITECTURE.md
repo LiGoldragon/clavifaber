@@ -20,13 +20,13 @@ Each request kind has exactly one variant in `ClaviFaberRequest` and
 prints exactly one variant of `ClaviFaberResponse` on stdout.
 
 ```sh
-clavifaber '(CertificateAuthorityIssuance "ABC123" "Cluster CA" "/var/lib/clavifaber/ca.pem")'
-clavifaber '(YggdrasilKeypairSetup "/var/lib/clavifaber/yggdrasil/keypair.json")'
-clavifaber '(PublicKeyPublicationWriting probus \
-  (OpenSshPublicKeyLocation "/etc/ssh/ssh_host_ed25519_key.pub") \
-  (YggdrasilKeypairLocation "/var/lib/clavifaber/yggdrasil/keypair.json") \
+clavifaber "(CertificateAuthorityIssuance ([ABC123] [Cluster CA] [/var/lib/clavifaber/ca.pem]))"
+clavifaber "(YggdrasilKeypairSetup ([/var/lib/clavifaber/yggdrasil/keypair.json]))"
+clavifaber "(PublicKeyPublicationWriting (probus \
+  (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) \
+  (YggdrasilKeypairLocation [/var/lib/clavifaber/yggdrasil/keypair.json]) \
   None \
-  "/var/lib/clavifaber/publication.nota")'
+  [/var/lib/clavifaber/publication.nota]))"
 ```
 
 The six request kinds:
@@ -67,7 +67,7 @@ Four Kameo actors plus a test-only trace recorder.
 
 ```mermaid
 flowchart TB
-    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(NotaSum)"]
+    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(NotaEnum)"]
     request --> root["RuntimeRoot"]
     root --> certificate_issuer["CertificateIssuer<br/>(CA / server / client / verify)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]

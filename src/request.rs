@@ -14,11 +14,11 @@ use crate::x509::{
     NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
 use crate::yggdrasil::YggdrasilProjection;
-use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaRecord, NotaSum};
+use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaEnum, NotaRecord};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaEnum)]
 pub enum ClaviFaberRequest {
     CertificateAuthorityIssuance(CertificateAuthorityIssuance),
     ServerCertificateIssuance(ServerCertificateIssuance),
@@ -60,7 +60,7 @@ impl ClaviFaberRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaSum)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaEnum)]
 pub enum ClaviFaberResponse {
     CertificateAuthorityCertificateWritten(CertificateAuthorityCertificateWritten),
     ServerCertificateWritten(ServerCertificateWritten),

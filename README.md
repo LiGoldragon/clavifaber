@@ -13,8 +13,8 @@ tool can be versioned and tested on its own cadence.
 Preferred operator surface:
 
 ```sh
-clavifaber '(IdentityDirectoryInitialization "/var/lib/clavifaber")'
-clavifaber '(PublicKeyPublicationRequest probus "/var/lib/clavifaber" None None None)'
+clavifaber "(YggdrasilKeypairSetup ([/var/lib/clavifaber/yggdrasil/keypair.json]))"
+clavifaber "(PublicKeyPublicationWriting (probus (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) None None [/var/lib/clavifaber/publication.nota]))"
 ```
 
 Compatibility commands:
