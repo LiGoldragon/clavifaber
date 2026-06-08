@@ -52,7 +52,7 @@ clavifaber '(PublicKeyPublicationWriting <node-name> \
 
 Adding new operator behavior means adding a new variant to
 `ClaviFaberRequest` (and a paired variant to `ClaviFaberResponse`).
-Each variant is its own `NotaRecord`-deriving struct in `src/request.rs`
+Each variant is its own `NotaDecode`/`NotaEncode`-deriving struct in `src/request.rs`
 with its own `execute()` method.
 
 ## Safety

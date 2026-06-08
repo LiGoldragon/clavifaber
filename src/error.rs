@@ -22,7 +22,7 @@ pub enum Error {
     Certificate(String),
 
     #[error("nota: {0}")]
-    Nota(#[from] nota_codec::Error),
+    Nota(#[from] nota_next::NotaDecodeError),
 
     #[error("inline Nota argument must be UTF-8: {got}")]
     InvalidInlineNotaArgument { got: String },

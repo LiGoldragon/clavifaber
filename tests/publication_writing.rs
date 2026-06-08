@@ -88,9 +88,9 @@ fn directory_text(path: &Path) -> String {
 }
 
 fn decode_publication(text: &str) -> PublicKeyPublication {
-    use nota_codec::{Decoder, NotaDecode};
-    let mut decoder = Decoder::new(text);
-    PublicKeyPublication::decode(&mut decoder).expect("decode publication.nota")
+    nota_next::NotaSource::new(text)
+        .parse()
+        .expect("decode publication.nota")
 }
 
 #[test]
@@ -110,13 +110,11 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         stderr_text(&yggdrasil)
     );
 
-    // Seed a fake wifi client cert PEM. NOTE: nota-codec's encoder
-    // currently doesn't emit multi-line `""" """` strings for values
-    // with newlines (filed as primary-qp7 nota-codec bead), so the
-    // test fixture is single-line.
+    // Seed a fake wifi client cert PEM with newlines; nota-next emits
+    // bracket-safe strings instead of quote-delimited strings.
     fs::write(
         fixture.wifi_client_cert(),
-        b"-----BEGIN CERTIFICATE----- MARKER -----END CERTIFICATE-----",
+        b"-----BEGIN CERTIFICATE-----\nMARKER\n-----END CERTIFICATE-----\n",
     )
     .expect("seed wifi client cert");
 

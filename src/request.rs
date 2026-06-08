@@ -14,11 +14,11 @@ use crate::x509::{
     NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
 use crate::yggdrasil::YggdrasilProjection;
-use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, NotaEnum, NotaRecord};
+use nota_next::{NotaDecode, NotaEncode, NotaSource};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub enum ClaviFaberRequest {
     CertificateAuthorityIssuance(CertificateAuthorityIssuance),
     ServerCertificateIssuance(ServerCertificateIssuance),
@@ -30,22 +30,11 @@ pub enum ClaviFaberRequest {
 
 impl ClaviFaberRequest {
     pub fn from_nota(text: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(text);
-        let request = <Self as NotaDecode>::decode(&mut decoder)?;
-        if let Some(token) = decoder.peek_token()? {
-            return Err(nota_codec::Error::UnexpectedToken {
-                expected: "end of input",
-                got: token,
-            }
-            .into());
-        }
-        Ok(request)
+        Ok(NotaSource::new(text).parse()?)
     }
 
     pub fn to_nota(&self) -> Result<String> {
-        let mut encoder = Encoder::new();
-        <Self as NotaEncode>::encode(self, &mut encoder)?;
-        Ok(encoder.into_string())
+        Ok(NotaEncode::to_nota(self))
     }
 
     pub async fn execute(self) -> Result<ClaviFaberResponse> {
@@ -60,7 +49,7 @@ impl ClaviFaberRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub enum ClaviFaberResponse {
     CertificateAuthorityCertificateWritten(CertificateAuthorityCertificateWritten),
     ServerCertificateWritten(ServerCertificateWritten),
@@ -72,22 +61,11 @@ pub enum ClaviFaberResponse {
 
 impl ClaviFaberResponse {
     pub fn from_nota(text: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(text);
-        let response = <Self as NotaDecode>::decode(&mut decoder)?;
-        if let Some(token) = decoder.peek_token()? {
-            return Err(nota_codec::Error::UnexpectedToken {
-                expected: "end of input",
-                got: token,
-            }
-            .into());
-        }
-        Ok(response)
+        Ok(NotaSource::new(text).parse()?)
     }
 
     pub fn to_nota(&self) -> Result<String> {
-        let mut encoder = Encoder::new();
-        <Self as NotaEncode>::encode(self, &mut encoder)?;
-        Ok(encoder.into_string())
+        Ok(NotaEncode::to_nota(self))
     }
 }
 
@@ -97,14 +75,14 @@ impl ClaviFaberResponse {
 //  fail loudly when it exists but is unparseable.
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct CertificateAuthorityIssuance {
     pub keygrip: String,
     pub common_name: String,
     pub output: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct CertificateAuthorityCertificateWritten {
     pub output: String,
 }
@@ -164,7 +142,7 @@ impl CertificateAuthorityIssuance {
 //  half-existence (would silently rotate the EC keypair).
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct ServerCertificateIssuance {
     pub certificate_authority_keygrip: String,
     pub certificate_authority_certificate: String,
@@ -173,7 +151,7 @@ pub struct ServerCertificateIssuance {
     pub output_private_key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct ServerCertificateWritten {
     pub certificate: String,
     pub private_key: String,
@@ -244,7 +222,7 @@ impl ServerCertificateIssuance {
 //  Idempotent: skip when the output parses; fail loudly otherwise.
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct ClientCertificateIssuance {
     pub certificate_authority_keygrip: String,
     pub certificate_authority_certificate: String,
@@ -253,7 +231,7 @@ pub struct ClientCertificateIssuance {
     pub output: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct ClientCertificateWritten {
     pub output: String,
 }
@@ -307,13 +285,13 @@ impl ClientCertificateIssuance {
 //  CertificateChainVerification — issuer + signature + validity-window.
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct CertificateChainVerification {
     pub certificate_authority_certificate: String,
     pub certificate: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct CertificateChainVerified {
     pub certificate: String,
 }
@@ -345,12 +323,12 @@ impl CertificateChainVerification {
 //  file. Idempotent: YggdrasilKey actor skips if the file exists.
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct YggdrasilKeypairSetup {
     pub keypair_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct YggdrasilKeypairSet {
     pub keypair_path: String,
     pub projection: YggdrasilProjection,
@@ -390,7 +368,7 @@ impl YggdrasilKeypairSetup {
 //  configures it).
 // ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct PublicKeyPublicationWriting {
     pub node_name: String,
     pub open_ssh_public_key: OpenSshPublicKeyLocation,
@@ -399,22 +377,22 @@ pub struct PublicKeyPublicationWriting {
     pub publication_output: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct OpenSshPublicKeyLocation {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct YggdrasilKeypairLocation {
     pub keypair_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct WifiClientCertificateLocation {
     pub certificate_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct PublicKeyPublicationWritten {
     pub publication_output: String,
 }
@@ -456,9 +434,7 @@ impl PublicKeyPublicationWriting {
             yggdrasil,
             wifi_client_certificate,
         };
-        let mut encoder = Encoder::new();
-        publication.encode(&mut encoder)?;
-        let publication_text = encoder.into_string();
+        let publication_text = publication.to_nota();
         AtomicFile::new(PathBuf::from(&self.publication_output))
             .write_bytes(publication_text.as_bytes(), 0o644)?;
         Ok(ClaviFaberResponse::PublicKeyPublicationWritten(

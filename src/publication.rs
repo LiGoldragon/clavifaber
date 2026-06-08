@@ -8,9 +8,9 @@
 //! during diagnostic and `tests/publication.rs` (round-trip).
 
 use crate::yggdrasil::YggdrasilProjection;
-use nota_codec::NotaRecord;
+use nota_next::{NotaDecode, NotaEncode};
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct PublicKeyPublication {
     pub node_name: String,
     pub open_ssh_public_key: String,
@@ -18,7 +18,7 @@ pub struct PublicKeyPublication {
     pub wifi_client_certificate: Option<WifiClientCertificate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, NotaRecord)]
+#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct WifiClientCertificate {
     pub pem: String,
 }
