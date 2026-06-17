@@ -40,7 +40,7 @@ fn nota_request_round_trip_preserves_public_key_publication_writing() {
 }
 
 #[test]
-fn nota_request_with_apostrophe_text_does_not_require_quote_delimiters() {
+fn nota_request_with_apostrophe_text_uses_only_needed_delimiters() {
     let request = ClaviFaberRequest::CertificateAuthorityIssuance(
         clavifaber::request::CertificateAuthorityIssuance {
             keygrip: "ABCDEF0123456789".to_string(),
@@ -57,11 +57,11 @@ fn nota_request_with_apostrophe_text_does_not_require_quote_delimiters() {
     );
     assert!(
         encoded.contains("[cluster's authority]"),
-        "encoded NOTA should bracket apostrophe text: {encoded}"
+        "encoded NOTA should bracket whitespace text: {encoded}"
     );
     assert!(
-        encoded.contains("[/var/lib/clavifaber/ca's.pem]"),
-        "encoded NOTA should bracket apostrophe paths: {encoded}"
+        encoded.contains("/var/lib/clavifaber/ca's.pem"),
+        "encoded NOTA should leave apostrophe-only paths bare: {encoded}"
     );
     assert_eq!(
         ClaviFaberRequest::from_nota(&encoded).expect("request decodes"),
