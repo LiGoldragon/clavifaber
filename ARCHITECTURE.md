@@ -13,6 +13,12 @@ separate component (lojix today; whatever the cluster orchestrator
 becomes tomorrow). Each request is idempotent on disk-existence;
 sequencing them belongs to the caller.
 
+## Direction
+
+`clavifaber` is the CriomOS host key-material provisioning tool: a thin, explicit operator surface for issuing and verifying X.509 material, reading GPG-backed Ed25519 public keys, preparing per-host Yggdrasil key projections, and writing public host-key publication records. It is not a daemon, has no SEMA store, and owns no durable state beyond the files it is explicitly asked to create.
+
+Behavior belongs on typed request and domain nouns. Adding a capability means adding a typed request payload, response payload, and execution method — not flags or loose helper logic. The operator-visible capability catalog is the request surface. Private key material must not be printed, snapshotted, or copied into the Nix store; file writes go through `AtomicFile`, private outputs use mode 0600, and public publication records use mode 0644.
+
 ## Operator surface
 
 The CLI is **NOTA-only**: one positional NOTA record per invocation.
