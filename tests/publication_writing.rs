@@ -88,7 +88,7 @@ fn directory_text(path: &Path) -> String {
 }
 
 fn decode_publication(text: &str) -> PublicKeyPublication {
-    nota_next::NotaSource::new(text)
+    nota::NotaSource::new(text)
         .parse()
         .expect("decode publication.nota")
 }

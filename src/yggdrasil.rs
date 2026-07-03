@@ -14,7 +14,7 @@
 
 use crate::error::{Error, Result};
 use crate::util::AtomicFile;
-use nota_next::{NotaDecode, NotaEncode};
+use nota::{NotaDecode, NotaEncode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

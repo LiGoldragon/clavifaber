@@ -14,7 +14,7 @@ use crate::x509::{
     NodeCertificateSigningRequest, ServerCertificate, ServerCertificateSigningRequest,
 };
 use crate::yggdrasil::YggdrasilProjection;
-use nota_next::{NotaDecode, NotaEncode, NotaSource};
+use nota::{NotaDecode, NotaEncode, NotaSource};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

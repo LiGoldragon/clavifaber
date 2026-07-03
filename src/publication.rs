@@ -8,7 +8,7 @@
 //! during diagnostic and `tests/publication.rs` (round-trip).
 
 use crate::yggdrasil::YggdrasilProjection;
-use nota_next::{NotaDecode, NotaEncode};
+use nota::{NotaDecode, NotaEncode};
 
 #[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
 pub struct PublicKeyPublication {
