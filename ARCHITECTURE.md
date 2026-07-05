@@ -73,7 +73,7 @@ Four Kameo actors plus a test-only trace recorder.
 
 ```mermaid
 flowchart TB
-    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(nota-next enum)"]
+    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(nota enum)"]
     request --> root["RuntimeRoot"]
     root --> certificate_issuer["CertificateIssuer<br/>(CA / server / client / verify)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]

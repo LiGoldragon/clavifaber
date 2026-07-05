@@ -110,7 +110,7 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         stderr_text(&yggdrasil)
     );
 
-    // Seed a fake wifi client cert PEM with newlines; nota-next emits
+    // Seed a fake wifi client cert PEM with newlines; nota emits
     // bracket-safe strings instead of quote-delimited strings.
     fs::write(
         fixture.wifi_client_cert(),
