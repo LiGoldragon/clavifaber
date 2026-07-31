@@ -4,7 +4,7 @@ ClaviFaber is a **host-key-material aggregator and certificate signer**
 for CriomOS hosts. It does NOT create or own the host's SSH identity
 — sshd does that, via NixOS's `services.openssh`. Clavifaber reads
 sshd's `ssh_host_ed25519_key.pub` and aggregates it into the typed
-`publication.nota` file alongside the Yggdrasil projection and the
+`publication.dotos` file alongside the Yggdrasil projection and the
 WiFi-PKI client certificate.
 
 It is **not** a convergence runner. The orchestration question — "is
@@ -21,7 +21,7 @@ Behavior belongs on typed request and domain nouns. Adding a capability means ad
 
 ## Operator surface
 
-The CLI is **NOTA-only**: one positional NOTA record per invocation.
+The CLI is **DOTOS-only**: one positional DOTOS record per invocation.
 Each request kind has exactly one variant in `ClaviFaberRequest` and
 prints exactly one variant of `ClaviFaberResponse` on stdout.
 
@@ -32,7 +32,7 @@ clavifaber "(PublicKeyPublicationWriting (probus \
   (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) \
   (YggdrasilKeypairLocation [/var/lib/clavifaber/yggdrasil/keypair.json]) \
   None \
-  [/var/lib/clavifaber/publication.nota]))"
+  [/var/lib/clavifaber/publication.dotos]))"
 ```
 
 The six request kinds:
@@ -44,7 +44,7 @@ The six request kinds:
 | `ClientCertificateIssuance` | Sign a client cert binding a host's SSH ed25519 public key (caller supplies the pubkey text); idempotent. |
 | `CertificateChainVerification` | Verify a cert chains to a CA: issuer-DN + validity window + signature. |
 | `YggdrasilKeypairSetup` | Generate the per-host Yggdrasil keypair file (mode 0600); return `(YggdrasilProjection address public_key)`. |
-| `PublicKeyPublicationWriting` | Read sshd's `ssh.pub` + (optional) yggdrasil keypair + (optional) wifi cert file; assemble and atomically write `publication.nota`. |
+| `PublicKeyPublicationWriting` | Read sshd's `ssh.pub` + (optional) yggdrasil keypair + (optional) wifi cert file; assemble and atomically write `publication.dotos`. |
 
 ## What clavifaber does NOT do
 
@@ -58,7 +58,7 @@ The six request kinds:
   re-issuance per the per-handler loud-fail policy).
 - **Convergence orchestration.** Each request is one focused
   operation; the caller sequences them.
-- **Cluster-side consumers.** `publication.nota` lands on disk; whoever
+- **Cluster-side consumers.** `publication.dotos` lands on disk; whoever
   reads it (the cluster registry, peers via SSH pull, ...) is a
   separate component.
 - **Rotation / renewal scheduling.** No timer-driven cert renewal.
@@ -73,7 +73,7 @@ Four Kameo actors plus a test-only trace recorder.
 
 ```mermaid
 flowchart TB
-    cli["clavifaber CLI<br/>(NOTA-only positional record)"] --> request["ClaviFaberRequest<br/>(nota enum)"]
+    cli["clavifaber CLI<br/>(DOTOS-only positional record)"] --> request["ClaviFaberRequest<br/>(dotos-next enum)"]
     request --> root["RuntimeRoot"]
     root --> certificate_issuer["CertificateIssuer<br/>(CA / server / client / verify)"]
     root --> gpg_agent_session["GpgAgentSession<br/>(blocking gpg-agent IO via spawn_blocking + DelegatedReply)"]
@@ -140,10 +140,10 @@ a same-named witness test.
 |---|---|
 | `PublicKeyPublicationWriting` reads sshd's `ssh.pub` verbatim into the publication. | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically` (asserts publication's `open_ssh_public_key` field equals the on-disk `ssh_host_ed25519_key.pub` content). |
 | `PublicKeyPublicationWriting` fails when sshd's `.pub` file is missing (clavifaber does NOT create one). | `tests/publication_writing.rs::public_key_publication_writing_fails_when_ssh_host_key_missing`. |
-| `publication.nota` carries a typed `YggdrasilProjection` record. | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically`. |
-| `publication.nota` carries a typed `WifiClientCertificate` record. | Same test asserts on the typed wrapper. |
+| `publication.dotos` carries a typed `YggdrasilProjection` record. | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically`. |
+| `publication.dotos` carries a typed `WifiClientCertificate` record. | Same test asserts on the typed wrapper. |
 | `PublicKeyPublicationWriting` omits the typed planes when the caller passes `None`. | `tests/publication_writing.rs::public_key_publication_writing_omits_optional_planes_when_none`. |
-| `publication.nota` is mode 0644 (publicly readable). | Same test asserts `stat -c %a` = 644. |
+| `publication.dotos` is mode 0644 (publicly readable). | Same test asserts `stat -c %a` = 644. |
 
 ### Certificate validity
 
@@ -158,7 +158,7 @@ a same-named witness test.
 | Constraint | Witness |
 |---|---|
 | All file writes go through `AtomicFile`; no partial files mid-write. | `tests/forbidden_edges.rs::all_file_writes_go_through_atomic_file`. |
-| `publication.nota` mode 0644. | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically`. |
+| `publication.dotos` mode 0644. | `tests/publication_writing.rs::public_key_publication_writing_assembles_typed_record_atomically`. |
 | Yggdrasil keypair file mode 0600. | `scripts/test-pki-lifecycle` Phase 7. |
 
 ## Test contract
@@ -174,7 +174,7 @@ a same-named witness test.
 ```
 src/
 ├── lib.rs                  — module declarations
-├── main.rs                 — #[tokio::main] CLI entry; one NOTA record in, one NOTA record out
+├── main.rs                 — #[tokio::main] CLI entry; one DOTOS record in, one DOTOS record out
 ├── error.rs                — Error enum (thiserror)
 ├── publication.rs          — PublicKeyPublication + WifiClientCertificate (typed publication record)
 ├── ssh_key.rs              — OpenSshPublicKey (data; parses ssh-ed25519 text into typed form)
@@ -198,7 +198,7 @@ tests/
 ├── issuance_idempotency.rs     — CA/server/client parse-before-skip + loud-fail witnesses
 ├── certificate_validity_window.rs — verify rejects expired / not-yet-valid certs
 ├── publication_writing.rs      — sshd's ssh.pub flows verbatim into publication; typed yggdrasil + wifi-cert wrappers
-└── request_surface.rs          — NOTA round-trip witnesses
+└── request_surface.rs          — DOTOS round-trip witnesses
 
 scripts/
 ├── test-pki-lifecycle          — impure 7-phase end-to-end (real gpg + yggdrasil + ssh-keygen)

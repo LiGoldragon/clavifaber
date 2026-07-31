@@ -44,7 +44,7 @@ MC4CAQAwBQYDK2VwBCIEIApF2z/vIhwA+qC4OUeQn8yLfolX/Y2fDS+4PCW+4R7i\n\
 
 fn run(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
-        .arg(request.to_nota().expect("encode request"))
+        .arg(request.to_dotos().expect("encode request"))
         .output()
         .expect("run clavifaber")
 }
@@ -82,7 +82,7 @@ fn certificate_authority_issuance_skips_when_output_is_valid_cert() {
         stderr_text(&output)
     );
 
-    let response = ClaviFaberResponse::from_nota(&stdout_text(&output)).expect("decode response");
+    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
     assert!(matches!(
         response,
         ClaviFaberResponse::CertificateAuthorityCertificateWritten(_)
@@ -119,7 +119,7 @@ fn server_certificate_issuance_skips_when_output_files_are_valid() {
         "skip path must succeed without gpg-agent; stderr: {}",
         stderr_text(&output)
     );
-    let response = ClaviFaberResponse::from_nota(&stdout_text(&output)).expect("decode response");
+    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
     assert!(matches!(
         response,
         ClaviFaberResponse::ServerCertificateWritten(_)
@@ -159,7 +159,7 @@ fn client_certificate_issuance_skips_when_output_is_valid_cert() {
         "skip path must succeed without gpg-agent; stderr: {}",
         stderr_text(&output)
     );
-    let response = ClaviFaberResponse::from_nota(&stdout_text(&output)).expect("decode response");
+    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
     assert!(matches!(
         response,
         ClaviFaberResponse::ClientCertificateWritten(_)

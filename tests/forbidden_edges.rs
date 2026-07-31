@@ -85,7 +85,7 @@ fn all_file_writes_go_through_atomic_file() {
                 !content.contains(pattern),
                 "Forbidden edge: {file_name} writes through `{pattern}` instead of \
                  AtomicFile. Atomic write-then-rename is the source-of-truth for \
-                 publication.nota and identity files; partial writes must never be \
+                 publication.dotos and identity files; partial writes must never be \
                  visible to readers."
             );
         }

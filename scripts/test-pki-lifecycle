@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== PKI lifecycle test (NOTA-only operator surface) ==="
+echo "=== PKI lifecycle test (DOTOS-only operator surface) ==="
 echo "    test directory: $TEST_DIRECTORY"
 
 echo ""
@@ -64,7 +64,7 @@ echo "    host public key: $NODE_SSH_PUBLIC_KEY"
 echo ""
 echo "--- Phase 3: CertificateAuthorityIssuance ---"
 CA_CERTIFICATE="$TEST_DIRECTORY/ca.pem"
-# Keygrip is hex-only and may start with a digit; quote so NOTA reads
+# Keygrip is hex-only and may start with a digit; quote so DOTOS reads
 # it as a string, not as an Int that stops at the first non-digit.
 "${CLAVIFABER[@]}" "(CertificateAuthorityIssuance \"$KEYGRIP\" \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
 
@@ -141,7 +141,7 @@ echo "    second node cert verified: OK"
 echo ""
 echo "--- Phase 7: YggdrasilKeypairSetup + PublicKeyPublicationWriting ---"
 YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/yggdrasil/keypair.json"
-PUBLICATION="$TEST_DIRECTORY/publication.nota"
+PUBLICATION="$TEST_DIRECTORY/publication.dotos"
 
 "${CLAVIFABER[@]}" "(YggdrasilKeypairSetup \"$YGGDRASIL_KEYPAIR\")" >/dev/null
 
@@ -171,34 +171,34 @@ echo "    yggdrasil keypair stable across re-run: OK"
 "${CLAVIFABER[@]}" "(PublicKeyPublicationWriting probus (OpenSshPublicKeyLocation \"$NODE_DIRECTORY/ssh_host_ed25519_key.pub\") (YggdrasilKeypairLocation \"$YGGDRASIL_KEYPAIR\") None \"$PUBLICATION\")" >/dev/null
 
 if [ ! -s "$PUBLICATION" ]; then
-  echo "FAIL: publication.nota not written"
+  echo "FAIL: publication.dotos not written"
   exit 1
 fi
-echo "    publication.nota: $(wc -c <"$PUBLICATION") bytes"
+echo "    publication.dotos: $(wc -c <"$PUBLICATION") bytes"
 
 PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
 if [ "$PUBLICATION_MODE" != "644" ]; then
-  echo "FAIL: publication.nota mode is $PUBLICATION_MODE, expected 644"
+  echo "FAIL: publication.dotos mode is $PUBLICATION_MODE, expected 644"
   exit 1
 fi
-echo "    publication.nota mode 0644: OK"
+echo "    publication.dotos mode 0644: OK"
 
 if ! grep -qF "$NODE_SSH_PUBLIC_KEY" "$PUBLICATION"; then
-  echo "FAIL: publication.nota does not carry sshd's host pubkey verbatim"
+  echo "FAIL: publication.dotos does not carry sshd's host pubkey verbatim"
   cat "$PUBLICATION"
   exit 1
 fi
 echo "    publication carries sshd-managed ssh.pub: OK"
 
 if ! grep -qE '[0-9a-f]{64}' "$PUBLICATION"; then
-  echo "FAIL: publication.nota missing yggdrasil public key (64-hex)"
+  echo "FAIL: publication.dotos missing yggdrasil public key (64-hex)"
   cat "$PUBLICATION"
   exit 1
 fi
 echo "    publication carries yggdrasil hex public key: OK"
 
 if ! grep -q 'YggdrasilProjection' "$PUBLICATION"; then
-  echo "FAIL: publication.nota missing typed YggdrasilProjection record"
+  echo "FAIL: publication.dotos missing typed YggdrasilProjection record"
   cat "$PUBLICATION"
   exit 1
 fi

@@ -47,7 +47,7 @@ impl Fixture {
     }
 
     fn publication(&self) -> PathBuf {
-        self.temporary_directory.path().join("publication.nota")
+        self.temporary_directory.path().join("publication.dotos")
     }
 
     /// Fabricate an SSH host key the way sshd would have, before
@@ -74,7 +74,7 @@ impl Fixture {
 
 fn run(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
-        .arg(request.to_nota().expect("encode request"))
+        .arg(request.to_dotos().expect("encode request"))
         .output()
         .expect("run clavifaber")
 }
@@ -88,9 +88,9 @@ fn directory_text(path: &Path) -> String {
 }
 
 fn decode_publication(text: &str) -> PublicKeyPublication {
-    nota::NotaSource::new(text)
+    dotos::DotosSource::new(text)
         .parse()
-        .expect("decode publication.nota")
+        .expect("decode publication.dotos")
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         stderr_text(&yggdrasil)
     );
 
-    // Seed a fake wifi client cert PEM with newlines; nota emits
+    // Seed a fake wifi client cert PEM with newlines; dotos-next emits
     // bracket-safe strings instead of quote-delimited strings.
     fs::write(
         fixture.wifi_client_cert(),
@@ -149,12 +149,12 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         & 0o777;
     assert_eq!(
         mode, 0o644,
-        "publication.nota must be mode 0644 (publicly readable for the haywire-stage SSH-collector pattern), got {mode:o}"
+        "publication.dotos must be mode 0644 (publicly readable for the haywire-stage SSH-collector pattern), got {mode:o}"
     );
 
     // Decode and assert typed fields.
     let publication_text =
-        fs::read_to_string(fixture.publication()).expect("read publication.nota");
+        fs::read_to_string(fixture.publication()).expect("read publication.dotos");
     let parsed = decode_publication(&publication_text);
     assert_eq!(parsed.node_name, "probus");
 
@@ -224,7 +224,7 @@ fn public_key_publication_writing_omits_optional_planes_when_none() {
     );
 
     let publication_text =
-        fs::read_to_string(fixture.publication()).expect("read publication.nota");
+        fs::read_to_string(fixture.publication()).expect("read publication.dotos");
     let parsed = decode_publication(&publication_text);
     assert_eq!(parsed.yggdrasil, None);
     assert_eq!(parsed.wifi_client_certificate, None);

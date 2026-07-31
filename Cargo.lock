@@ -94,15 +94,15 @@ dependencies = [
 
 [[package]]
 name = "clavifaber"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64ct",
  "const-oid",
  "der",
+ "dotos",
  "ed25519-dalek",
  "hex",
  "kameo",
- "nota",
  "p256",
  "pem-rfc7468",
  "rand",
@@ -214,6 +214,25 @@ dependencies = [
  "const-oid",
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "dotos"
+version = "0.10.0"
+source = "git+https://github.com/LiGoldragon/dotos.git?rev=e19699933dabd09842c4423d15a704ce3d48b493#e19699933dabd09842c4423d15a704ce3d48b493"
+dependencies = [
+ "dotos-derive",
+ "rkyv",
+]
+
+[[package]]
+name = "dotos-derive"
+version = "0.5.0"
+source = "git+https://github.com/LiGoldragon/dotos.git?rev=e19699933dabd09842c4423d15a704ce3d48b493#e19699933dabd09842c4423d15a704ce3d48b493"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -636,25 +655,6 @@ name = "munge_macro"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4568f25ccbd45ab5d5603dc34318c1ec56b117531781260002151b8530a9f931"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "nota"
-version = "0.5.1"
-source = "git+https://github.com/LiGoldragon/nota.git?branch=main#bea7e2840ac2cf3e384f07b5c10eeb0890cead25"
-dependencies = [
- "nota-derive",
- "rkyv",
-]
-
-[[package]]
-name = "nota-derive"
-version = "0.3.0"
-source = "git+https://github.com/LiGoldragon/nota.git?branch=main#bea7e2840ac2cf3e384f07b5c10eeb0890cead25"
 dependencies = [
  "proc-macro2",
  "quote",

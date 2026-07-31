@@ -1,6 +1,6 @@
 [package]
 name = "clavifaber"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "CriomOS host key-material provisioning tool."
@@ -30,7 +30,7 @@ sha2 = "0.10"
 hex = "0.4"
 const-oid = "0.9"
 thiserror = "2"
-nota  = { git = "https://github.com/LiGoldragon/nota.git", branch = "main" }
+dotos = { git = "https://github.com/LiGoldragon/dotos.git", rev = "e19699933dabd09842c4423d15a704ce3d48b493" }
 kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 serde_json = "1"

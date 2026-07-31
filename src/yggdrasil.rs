@@ -14,7 +14,7 @@
 
 use crate::error::{Error, Result};
 use crate::util::AtomicFile;
-use nota::{NotaDecode, NotaEncode};
+use dotos::{DotosDecode, DotosEncode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -22,7 +22,7 @@ use std::process::Command;
 /// IPv6 address (200::/7 range) + 64-hex public key. Derived from
 /// the keypair file by invoking `yggdrasil -useconffile <file>
 /// -publickey -address` (no daemon).
-#[derive(Debug, Clone, PartialEq, Eq, NotaDecode, NotaEncode)]
+#[derive(Debug, Clone, PartialEq, Eq, DotosDecode, DotosEncode)]
 pub struct YggdrasilProjection {
     pub address: String,
     pub public_key: String,

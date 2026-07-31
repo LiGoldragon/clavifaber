@@ -14,7 +14,7 @@ Preferred operator surface:
 
 ```sh
 clavifaber "(YggdrasilKeypairSetup ([/var/lib/clavifaber/yggdrasil/keypair.json]))"
-clavifaber "(PublicKeyPublicationWriting (probus (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) None None [/var/lib/clavifaber/publication.nota]))"
+clavifaber "(PublicKeyPublicationWriting (probus (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) None None [/var/lib/clavifaber/publication.dotos]))"
 ```
 
 Compatibility commands:
@@ -27,7 +27,7 @@ Compatibility commands:
 - `clavifaber verify --ca-cert ca.crt --cert some.crt`
 
 The Clap command surface is a compatibility bridge. New operator-facing work
-targets the Nota request surface described in `ARCHITECTURE.md`.
+targets the Dotos request surface described in `ARCHITECTURE.md`.
 
 ## Development
 
@@ -41,7 +41,7 @@ checks. `nix run .#test-pki-lifecycle` runs the impure GPG/gpg-agent lifecycle
 test in a temporary home.
 
 Pure tests include process-level coverage for the compatibility CLI and the
-inline Nota request surface. The impure lifecycle covers GPG key creation, CA
+inline Dotos request surface. The impure lifecycle covers GPG key creation, CA
 certificate generation, server certificate generation, node certificate
 generation, verification, and identity corruption recovery.
 

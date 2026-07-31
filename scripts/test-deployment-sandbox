@@ -21,7 +21,7 @@
 #   4. Runs clavifaber in a bwrap sandbox with /nix/store bind-ro,
 #      the SSH-host-key directory bind-ro, the state directory
 #      bind-rw.
-#   5. Runs the NOTA-only PublicKeyPublicationWriting sequence (the
+#   5. Runs the DOTOS-only PublicKeyPublicationWriting sequence (the
 #      only step CriomOS's complex-init takes today now that
 #      clavifaber doesn't create host keys).
 #   6. Verifies the host-visible state has the expected publication.
@@ -110,12 +110,12 @@ echo ""
 echo "--- step 1/1: PublicKeyPublicationWriting ---"
 bwrap "${BWRAP_ARGS[@]}" -- \
   "$CLAVIFABER_BIN_PATH" \
-  '(PublicKeyPublicationWriting bwrap-host (OpenSshPublicKeyLocation "/etc/ssh/ssh_host_ed25519_key.pub") None None "/var/lib/clavifaber/publication.nota")'
+  '(PublicKeyPublicationWriting bwrap-host (OpenSshPublicKeyLocation "/etc/ssh/ssh_host_ed25519_key.pub") None None "/var/lib/clavifaber/publication.dotos")'
 
 echo ""
 echo "--- verifying host-visible outputs ---"
 
-PUBLICATION="$STATE_DIR/publication.nota"
+PUBLICATION="$STATE_DIR/publication.dotos"
 if [ ! -s "$PUBLICATION" ]; then
   echo "FAIL: $PUBLICATION missing or empty"
   exit 1
@@ -123,7 +123,7 @@ fi
 
 PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
 if [ "$PUBLICATION_MODE" != "644" ]; then
-  echo "FAIL: publication.nota mode $PUBLICATION_MODE (expected 644)"
+  echo "FAIL: publication.dotos mode $PUBLICATION_MODE (expected 644)"
   exit 1
 fi
 
@@ -134,21 +134,21 @@ if [ -e "$STATE_DIR/key.pem" ]; then
 fi
 
 if ! grep -q 'PublicKeyPublication' "$PUBLICATION"; then
-  echo "FAIL: publication.nota missing PublicKeyPublication record"
+  echo "FAIL: publication.dotos missing PublicKeyPublication record"
   exit 1
 fi
 if ! grep -q 'bwrap-host' "$PUBLICATION"; then
-  echo "FAIL: publication.nota missing node_name"
+  echo "FAIL: publication.dotos missing node_name"
   exit 1
 fi
 
 SSHD_PUB_KEY=$(cat "$SSH_DIR/ssh_host_ed25519_key.pub")
 if ! grep -qF "$SSHD_PUB_KEY" "$PUBLICATION"; then
-  echo "FAIL: publication.nota does not carry sshd's ssh.pub verbatim"
+  echo "FAIL: publication.dotos does not carry sshd's ssh.pub verbatim"
   exit 1
 fi
 
-echo "    publication.nota (mode 0644): OK"
+echo "    publication.dotos (mode 0644): OK"
 echo "    no clavifaber-owned key.pem (sshd owns the host key): OK"
 echo "    publication carries sshd's ssh.pub verbatim: OK"
 echo ""

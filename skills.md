@@ -13,7 +13,7 @@ for CriomOS hosts. Its concern is:
    server cert + EC keypair, per-host client cert binding sshd's ed25519
    pubkey).
 3. Generating a per-host Yggdrasil keypair (when wired in).
-4. Writing the typed `publication.nota` aggregate that other hosts read.
+4. Writing the typed `publication.dotos` aggregate that other hosts read.
 
 It does **not** own:
 
@@ -31,9 +31,9 @@ It does **not** own:
 - Cluster-side aggregation of publication files.
 - Rotation / renewal scheduling (parked).
 
-## Operator surface — NOTA only
+## Operator surface — DOTOS only
 
-The CLI takes exactly one positional NOTA record. There is no Clap
+The CLI takes exactly one positional DOTOS record. There is no Clap
 subcommand surface; there is no `Converge` mega-request; there is no
 `IdentitySetup` (sshd owns that). Six focused, idempotent verbs:
 
@@ -47,18 +47,18 @@ clavifaber '(PublicKeyPublicationWriting <node-name> \
   (OpenSshPublicKeyLocation "/etc/ssh/ssh_host_ed25519_key.pub") \
   (YggdrasilKeypairLocation "/path/yggdrasil-keypair.json") | None \
   (WifiClientCertificateLocation "/path/client.pem") | None \
-  "/path/publication.nota")'
+  "/path/publication.dotos")'
 ```
 
 Adding new operator behavior means adding a new variant to
 `ClaviFaberRequest` (and a paired variant to `ClaviFaberResponse`).
-Each variant is its own `NotaDecode`/`NotaEncode`-deriving struct in `src/request.rs`
+Each variant is its own `DotosDecode`/`DotosEncode`-deriving struct in `src/request.rs`
 with its own `execute()` method.
 
 ## Safety
 
 - Never print, snapshot, or place private key material in the Nix store,
-  on stdout, on stderr, or in any response NOTA record.
+  on stdout, on stderr, or in any response DOTOS record.
 - Clavifaber writes private bytes ONLY for: the X.509 server private
   key (`ServerCertificateIssuance.output_private_key`), the Yggdrasil
   keypair file (`YggdrasilKeypairSetup.keypair_path`). Both at mode 0600

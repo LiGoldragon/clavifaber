@@ -21,11 +21,11 @@ pub enum Error {
     #[error("certificate: {0}")]
     Certificate(String),
 
-    #[error("nota: {0}")]
-    Nota(#[from] nota::NotaDecodeError),
+    #[error("dotos: {0}")]
+    Dotos(#[from] dotos::DotosDecodeError),
 
-    #[error("inline Nota argument must be UTF-8: {got}")]
-    InvalidInlineNotaArgument { got: String },
+    #[error("inline Dotos argument must be UTF-8: {got}")]
+    InvalidInlineDotosArgument { got: String },
 
     #[error("state: {0}")]
     State(String),
