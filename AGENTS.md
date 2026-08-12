@@ -15,3 +15,9 @@ Run `bd list --status open` to see what's already on the table.
 
 GPG → X.509 PKI tool plus node-identity complex generation. Used by
 CriomOS for WiFi EAP-TLS and node SSH key derivation.
+
+## Protos estate status
+
+Stack: correct-new destination
+Status: active component, current checkout legacy-wired
+This checkout is not proof of correct-new adoption.
