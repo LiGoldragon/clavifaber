@@ -13,21 +13,14 @@ tool can be versioned and tested on its own cadence.
 Preferred operator surface:
 
 ```sh
-clavifaber "(YggdrasilKeypairSetup ([/var/lib/clavifaber/yggdrasil/keypair.json]))"
-clavifaber "(PublicKeyPublicationWriting (probus (OpenSshPublicKeyLocation [/etc/ssh/ssh_host_ed25519_key.pub]) None None [/var/lib/clavifaber/publication.dotos]))"
+clavifaber 'YggdrasilKeypairSetup.{ /var/lib/clavifaber/yggdrasil/keypair.json }'
+clavifaber 'PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } None None /var/lib/clavifaber/publication.datom }'
 ```
 
-Compatibility commands:
-
-- `clavifaber ca-init --keygrip <G> --cn <N> --out ca.crt`
-- `clavifaber server-cert --ca-keygrip <G> --ca-cert ca.crt --cn <N> --out-cert server.crt --out-key server.key`
-- `clavifaber node-cert --ca-keygrip <G> --ca-cert ca.crt --ssh-pubkey <S> --cn <N> --out node.crt`
-- `clavifaber complex-init --dir <D>`
-- `clavifaber derive-pubkey --dir <D>`
-- `clavifaber verify --ca-cert ca.crt --cert some.crt`
-
-The Clap command surface is a compatibility bridge. New operator-facing work
-targets the Dotos request surface described in `ARCHITECTURE.md`.
+The CLI accepts one generated `ClaviFaberRequest` Datom per invocation and
+prints one generated `ClaviFaberResponse` Datom. The public publication is a
+direct `PublicKeyPublication` Datom at `publication.datom`; retained
+`publication.dotos` files are not read or rewritten.
 
 ## Development
 
@@ -40,8 +33,8 @@ nix run .#test-pki-lifecycle
 checks. `nix run .#test-pki-lifecycle` runs the impure GPG/gpg-agent lifecycle
 test in a temporary home.
 
-Pure tests include process-level coverage for the compatibility CLI and the
-inline Dotos request surface. The impure lifecycle covers GPG key creation, CA
+Pure tests include process-level coverage for the inline Datom request surface.
+The impure lifecycle covers GPG key creation, CA
 certificate generation, server certificate generation, node certificate
 generation, verification, and identity corruption recovery.
 

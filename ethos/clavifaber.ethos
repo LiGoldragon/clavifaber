@@ -1,0 +1,35 @@
+; Clavifaber's one-shot public request, reply, and publication records.
+; The CLI and public publication file carry these values as Datom text.
+Types
+[ protos:[ Text ] ]
+[ ClaviFaberRequest.[ CertificateAuthorityIssuance.CertificateAuthorityIssuance
+                       ServerCertificateIssuance.ServerCertificateIssuance
+                       ClientCertificateIssuance.ClientCertificateIssuance
+                       CertificateChainVerification.CertificateChainVerification
+                       YggdrasilKeypairSetup.YggdrasilKeypairSetup
+                       PublicKeyPublicationWriting.PublicKeyPublicationWriting ]
+  ClaviFaberResponse.[ CertificateAuthorityCertificateWritten.CertificateAuthorityCertificateWritten
+                        ServerCertificateWritten.ServerCertificateWritten
+                        ClientCertificateWritten.ClientCertificateWritten
+                        CertificateChainVerified.CertificateChainVerified
+                        YggdrasilKeypairSet.YggdrasilKeypairSet
+                        PublicKeyPublicationWritten.PublicKeyPublicationWritten ]
+  CertificateAuthorityIssuance.{ Text Text Text }
+  CertificateAuthorityCertificateWritten.{ Text }
+  ServerCertificateIssuance.{ Text Text Text Text Text }
+  ServerCertificateWritten.{ Text Text }
+  ClientCertificateIssuance.{ Text Text Text Text Text }
+  ClientCertificateWritten.{ Text }
+  CertificateChainVerification.{ Text Text }
+  CertificateChainVerified.{ Text }
+  YggdrasilKeypairSetup.{ Text }
+  YggdrasilKeypairSet.{ Text YggdrasilProjection }
+  PublicKeyPublicationWriting.{ Text OpenSshPublicKeyLocation Option<YggdrasilKeypairLocation> Option<WifiClientCertificateLocation> Text }
+  OpenSshPublicKeyLocation.{ Text }
+  YggdrasilKeypairLocation.{ Text }
+  WifiClientCertificateLocation.{ Text }
+  PublicKeyPublicationWritten.{ Text }
+  PublicKeyPublication.{ Text Text Option<YggdrasilProjection> Option<WifiClientCertificate> }
+  WifiClientCertificate.{ Text }
+  YggdrasilProjection.{ Text Text } ]
+[]

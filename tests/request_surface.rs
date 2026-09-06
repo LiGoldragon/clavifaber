@@ -1,156 +1,140 @@
-//! DOTOS round-trip + inline-DOTOS CLI dispatch for the request surface.
+//! Datom round trips and inline-Datom CLI dispatch for every request variant.
 
 use clavifaber::request::{
-    ClaviFaberRequest, ClientCertificateIssuance, OpenSshPublicKeyLocation,
-    PublicKeyPublicationWriting,
+    CertificateAuthorityIssuance, CertificateChainVerification, ClaviFaberRequest,
+    ClaviFaberResponse, ClientCertificateIssuance, CommandLine, OpenSshPublicKeyLocation,
+    PublicKeyPublicationWriting, ServerCertificateIssuance, WifiClientCertificateLocation,
+    YggdrasilKeypairLocation, YggdrasilKeypairSetup,
 };
+use datom_codec::Actualizable;
+use protos::Textualizable;
 
-#[test]
-fn dotos_request_round_trip_preserves_client_certificate_issuance() {
-    let request = ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance {
-        certificate_authority_keygrip: "ABCDEF0123456789".to_string(),
-        certificate_authority_certificate: "/var/lib/clavifaber/ca.pem".to_string(),
-        open_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAA probus".to_string(),
-        common_name: "probus@aedifico".to_string(),
-        output: "/var/lib/clavifaber/probus.pem".to_string(),
-    });
+fn text(value: &str) -> protos::Text {
+    protos::Text::try_from(value).expect("fixture text")
+}
 
-    let encoded = request.to_dotos().expect("request encodes");
-    let decoded = ClaviFaberRequest::from_dotos(&encoded).expect("request decodes");
-
-    assert_eq!(decoded, request);
+fn publication_request() -> ClaviFaberRequest {
+    ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting(
+        text("ouranos"),
+        OpenSshPublicKeyLocation(text("/etc/ssh/ssh_host_ed25519_key.pub")),
+        None,
+        None,
+        text("/etc/criomOS/complex/publication.datom"),
+    ))
 }
 
 #[test]
-fn dotos_request_round_trip_preserves_public_key_publication_writing() {
-    let request = ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting {
-        node_name: "probus".to_string(),
-        open_ssh_public_key: OpenSshPublicKeyLocation {
-            path: "/etc/ssh/ssh_host_ed25519_key.pub".to_string(),
-        },
-        yggdrasil_keypair: None,
-        wifi_client_certificate: None,
-        publication_output: "/var/lib/clavifaber/publication.dotos".to_string(),
-    });
+fn every_request_variant_round_trips_through_current_datom() {
+    let variants = [
+        ClaviFaberRequest::CertificateAuthorityIssuance(CertificateAuthorityIssuance(
+            text("ABCDEF0123456789"),
+            text("cluster authority"),
+            text("/var/lib/clavifaber/ca.pem"),
+        )),
+        ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+            text("ABCDEF0123456789"),
+            text("/var/lib/clavifaber/ca.pem"),
+            text("server"),
+            text("/var/lib/clavifaber/server.pem"),
+            text("/var/lib/clavifaber/server.key"),
+        )),
+        ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance(
+            text("ABCDEF0123456789"),
+            text("/var/lib/clavifaber/ca.pem"),
+            text("ssh-ed25519 AAAA host"),
+            text("client"),
+            text("/var/lib/clavifaber/client.pem"),
+        )),
+        ClaviFaberRequest::CertificateChainVerification(CertificateChainVerification(
+            text("/var/lib/clavifaber/ca.pem"),
+            text("/var/lib/clavifaber/client.pem"),
+        )),
+        ClaviFaberRequest::YggdrasilKeypairSetup(YggdrasilKeypairSetup(text(
+            "/var/lib/clavifaber/yggdrasil.json",
+        ))),
+        publication_request(),
+    ];
 
-    let encoded = request.to_dotos().expect("request encodes");
-    let decoded = ClaviFaberRequest::from_dotos(&encoded).expect("request decodes");
-
-    assert_eq!(decoded, request);
+    for request in variants {
+        let encoded = request.textualize();
+        assert_eq!(
+            ClaviFaberRequest::decode(&encoded).expect("request decodes"),
+            request
+        );
+    }
 }
 
 #[test]
-fn dotos_request_with_apostrophe_text_uses_only_needed_delimiters() {
-    let request = ClaviFaberRequest::CertificateAuthorityIssuance(
-        clavifaber::request::CertificateAuthorityIssuance {
-            keygrip: "ABCDEF0123456789".to_string(),
-            common_name: "cluster's authority".to_string(),
-            output: "/var/lib/clavifaber/ca's.pem".to_string(),
-        },
-    );
-
-    let encoded = request.to_dotos().expect("request encodes");
-
-    assert!(
-        !encoded.contains('"'),
-        "encoded DOTOS should not use quote string delimiters: {encoded}"
-    );
-    assert!(
-        encoded.contains("(cluster's authority)"),
-        "encoded DOTOS should parenthesize whitespace text: {encoded}"
-    );
-    assert!(
-        encoded.contains("/var/lib/clavifaber/ca's.pem"),
-        "encoded DOTOS should leave apostrophe-only paths bare: {encoded}"
+fn cli_datoms_use_one_root_variant_with_a_structural_payload() {
+    let encoded = publication_request().textualize();
+    assert_eq!(
+        encoded,
+        "PublicKeyPublicationWriting.{ ouranos { /etc/ssh/ssh_host_ed25519_key.pub } None None /etc/criomOS/complex/publication.datom }"
     );
     assert_eq!(
-        ClaviFaberRequest::from_dotos(&encoded).expect("request decodes"),
+        ClaviFaberRequest::decode(&encoded).expect("canonical request decodes"),
+        publication_request()
+    );
+}
+
+#[test]
+fn publication_request_rejects_flat_or_legacy_tagged_payloads() {
+    assert!(ClaviFaberRequest::decode(
+        "PublicKeyPublicationWriting.{ouranos /etc/ssh/ssh_host_ed25519_key.pub None None /etc/criomOS/complex/publication.datom}"
+    )
+    .is_err());
+    assert!(ClaviFaberRequest::decode(
+        "PublicKeyPublicationWriting.{{ouranos OpenSshPublicKeyLocation.{/etc/ssh/ssh_host_ed25519_key.pub} None None /etc/criomOS/complex/publication.datom}}"
+    )
+    .is_err());
+}
+
+#[test]
+fn inline_cli_combines_arguments_only_into_one_datom_value() {
+    let request = publication_request();
+    let encoded = request.textualize();
+    let (head, tail) = encoded.split_once(" None ").expect("optional boundary");
+    let first = format!("{head} None");
+    let parsed = CommandLine::from_arguments([first, tail.to_owned()])
+        .parse_request()
+        .expect("one reconstructed Datom parses");
+    assert_eq!(parsed, request);
+}
+
+#[test]
+fn reply_round_trip_uses_the_same_generated_datom_boundary() {
+    let reply = ClaviFaberResponse::PublicKeyPublicationWritten(
+        clavifaber::request::PublicKeyPublicationWritten(text(
+            "/etc/criomOS/complex/publication.datom",
+        )),
+    );
+    let encoded = reply.textualize();
+    let decoded = datom_codec::Potential::<ClaviFaberResponse>::from(encoded)
+        .actualize(datom_codec::IncorporationBudget::try_from(1_024).expect("positive budget"))
+        .expect("reply decodes");
+    assert_eq!(decoded, reply);
+}
+
+#[test]
+fn optional_publication_sources_remain_explicit() {
+    let request = ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting(
+        text("probus"),
+        OpenSshPublicKeyLocation(text("/etc/ssh/ssh_host_ed25519_key.pub")),
+        Some(YggdrasilKeypairLocation(text(
+            "/var/lib/clavifaber/yggdrasil.json",
+        ))),
+        Some(WifiClientCertificateLocation(text(
+            "/var/lib/clavifaber/wifi.pem",
+        ))),
+        text("/var/lib/clavifaber/publication.datom"),
+    ));
+    let encoded = request.textualize();
+    assert_eq!(
+        encoded,
+        "PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } Some.{ /var/lib/clavifaber/yggdrasil.json } Some.{ /var/lib/clavifaber/wifi.pem } /var/lib/clavifaber/publication.datom }"
+    );
+    assert_eq!(
+        ClaviFaberRequest::decode(&encoded).expect("optional request decodes"),
         request
-    );
-}
-
-/// The exact wire string CriomOS hand-writes for a node publication
-/// request and feeds to the clavifaber CLI. The round-trip tests above
-/// build a Rust value and never witness this literal, so they could not
-/// catch CriomOS drifting the hand-written DOTOS — which it did twice:
-/// first the outer root was flattened to a 6-field form, then the inner
-/// `open_ssh_public_key` carried an extra `(OpenSshPublicKeyLocation …)`
-/// tag. This golden string pins the contract through the same entry the
-/// CLI uses (`ClaviFaberRequest::from_dotos`).
-const CRIOMOS_PUBLICATION_GOLDEN: &str = "PublicKeyPublicationWriting.{ouranos {/etc/ssh/ssh_host_ed25519_key.pub} None None /etc/criomOS/complex/publication.dotos}";
-
-#[test]
-fn criomos_publication_golden_string_decodes_to_expected_request() {
-    let decoded =
-        ClaviFaberRequest::from_dotos(CRIOMOS_PUBLICATION_GOLDEN).expect("golden string decodes");
-
-    let expected = ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting {
-        node_name: "ouranos".to_string(),
-        open_ssh_public_key: OpenSshPublicKeyLocation {
-            path: "/etc/ssh/ssh_host_ed25519_key.pub".to_string(),
-        },
-        yggdrasil_keypair: None,
-        wifi_client_certificate: None,
-        publication_output: "/etc/criomOS/complex/publication.dotos".to_string(),
-    });
-
-    assert_eq!(
-        decoded, expected,
-        "golden string must decode to the canonical PublicKeyPublicationWriting"
-    );
-
-    // Field-by-field witness so a future drift names the exact field.
-    let ClaviFaberRequest::PublicKeyPublicationWriting(writing) = decoded else {
-        panic!("golden string decoded to the wrong request variant: {decoded:?}");
-    };
-    assert_eq!(writing.node_name, "ouranos");
-    assert_eq!(
-        writing.open_ssh_public_key,
-        OpenSshPublicKeyLocation {
-            path: "/etc/ssh/ssh_host_ed25519_key.pub".to_string(),
-        }
-    );
-    assert_eq!(writing.yggdrasil_keypair, None);
-    assert_eq!(writing.wifi_client_certificate, None);
-    assert_eq!(
-        writing.publication_output,
-        "/etc/criomOS/complex/publication.dotos"
-    );
-}
-
-#[test]
-fn criomos_publication_golden_string_round_trips_through_to_dotos() {
-    // `to_dotos` must reproduce the exact literal CriomOS emits, so the
-    // golden string is anchored from both sides: parse it, re-encode it,
-    // and the bytes must come back identical.
-    let decoded =
-        ClaviFaberRequest::from_dotos(CRIOMOS_PUBLICATION_GOLDEN).expect("golden string decodes");
-    assert_eq!(
-        decoded.to_dotos().expect("re-encode"),
-        CRIOMOS_PUBLICATION_GOLDEN,
-        "to_dotos must reproduce the canonical CriomOS wire string verbatim"
-    );
-}
-
-#[test]
-fn wrong_publication_shapes_are_rejected() {
-    // The 6-field flat root that CriomOS first emitted (every field
-    // hoisted directly under the variant tag, no inner record for the
-    // open-ssh-pubkey). This is NOT a PublicKeyPublicationWriting and
-    // must not decode as one.
-    let flat_six_root = "PublicKeyPublicationWriting.{ouranos /etc/ssh/ssh_host_ed25519_key.pub None None /etc/criomOS/complex/publication.dotos}";
-    assert!(
-        ClaviFaberRequest::from_dotos(flat_six_root).is_err(),
-        "the 6-field flat root must be rejected, not silently accepted: {flat_six_root}"
-    );
-
-    // The 2-root inner form CriomOS emitted next: the open-ssh-pubkey
-    // location wrapped in an explicit `(OpenSshPublicKeyLocation …)`
-    // tag. The field is a positional record, not a tagged one, so this
-    // must also be rejected.
-    let tagged_inner = "PublicKeyPublicationWriting.{ouranos OpenSshPublicKeyLocation.{/etc/ssh/ssh_host_ed25519_key.pub} None None /etc/criomOS/complex/publication.dotos}";
-    assert!(
-        ClaviFaberRequest::from_dotos(tagged_inner).is_err(),
-        "the (OpenSshPublicKeyLocation …) tagged-inner form must be rejected: {tagged_inner}"
     );
 }

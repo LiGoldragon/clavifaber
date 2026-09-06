@@ -1,24 +1,3 @@
-//! The typed `publication.dotos` record clavifaber writes to a host's
-//! public-readable directory. Other hosts (or whatever the cluster
-//! consumer becomes) read this file to learn the host's public key
-//! material.
-//!
-//! Today the only writer is `PublicKeyPublicationWriting` in
-//! `src/request.rs`. Today the only reader is `cat publication.dotos`
-//! during diagnostic and `tests/publication.rs` (round-trip).
+//! The typed public `publication.datom` record Clavifaber writes for cluster readers.
 
-use crate::yggdrasil::YggdrasilProjection;
-use dotos::{DotosDecode, DotosEncode};
-
-#[derive(Debug, Clone, PartialEq, Eq, DotosDecode, DotosEncode)]
-pub struct PublicKeyPublication {
-    pub node_name: String,
-    pub open_ssh_public_key: String,
-    pub yggdrasil: Option<YggdrasilProjection>,
-    pub wifi_client_certificate: Option<WifiClientCertificate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, DotosDecode, DotosEncode)]
-pub struct WifiClientCertificate {
-    pub pem: String,
-}
+pub use crate::generated::clavifaber::{PublicKeyPublication, WifiClientCertificate};

@@ -1,5 +1,6 @@
 pub mod actors;
 pub mod error;
+pub mod generated;
 mod gpg_agent;
 pub mod publication;
 pub mod request;

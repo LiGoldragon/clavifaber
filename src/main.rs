@@ -1,5 +1,6 @@
 use clavifaber::error::Result;
 use clavifaber::request::CommandLine;
+use protos::Textualizable;
 
 #[tokio::main]
 async fn main() {
@@ -12,6 +13,6 @@ async fn main() {
 async fn run() -> Result<()> {
     let request = CommandLine::from_env().parse_request()?;
     let response = request.execute().await?;
-    println!("{}", response.to_dotos()?);
+    println!("{}", response.textualize());
     Ok(())
 }

@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== PKI lifecycle test (DOTOS-only operator surface) ==="
+echo "=== PKI lifecycle test (Datom operator surface) ==="
 echo "    test directory: $TEST_DIRECTORY"
 
 echo ""
@@ -64,9 +64,9 @@ echo "    host public key: $NODE_SSH_PUBLIC_KEY"
 echo ""
 echo "--- Phase 3: CertificateAuthorityIssuance ---"
 CA_CERTIFICATE="$TEST_DIRECTORY/ca.pem"
-# Keygrip is hex-only and may start with a digit; quote so DOTOS reads
-# it as a string, not as an Int that stops at the first non-digit.
-"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance \"$KEYGRIP\" \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
+# Keygrip is hex-only and may start with a digit, so it is a quoted Datom
+# Text value rather than an Integer.
+"${CLAVIFABER[@]}" "CertificateAuthorityIssuance.{ “$KEYGRIP” “Aedifico Test CA” $CA_CERTIFICATE }" >/dev/null
 
 if [ ! -s "$CA_CERTIFICATE" ]; then
   echo "FAIL: CA cert not created"
@@ -85,7 +85,7 @@ echo "    CA:TRUE constraint: OK"
 
 # Idempotency on CA: re-issuance is a no-op (file already exists).
 CA_BEFORE=$(cat "$CA_CERTIFICATE")
-"${CLAVIFABER[@]}" "(CertificateAuthorityIssuance \"$KEYGRIP\" \"Aedifico Test CA\" \"$CA_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "CertificateAuthorityIssuance.{ “$KEYGRIP” “Aedifico Test CA” $CA_CERTIFICATE }" >/dev/null
 CA_AFTER=$(cat "$CA_CERTIFICATE")
 if [ "$CA_BEFORE" != "$CA_AFTER" ]; then
   echo "FAIL: CA cert was re-issued instead of skipped"
@@ -97,7 +97,7 @@ echo ""
 echo "--- Phase 4: ServerCertificateIssuance ---"
 SERVER_CERTIFICATE="$TEST_DIRECTORY/server.pem"
 SERVER_PRIVATE_KEY="$TEST_DIRECTORY/server.key"
-"${CLAVIFABER[@]}" "(ServerCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"faber.criome\" \"$SERVER_CERTIFICATE\" \"$SERVER_PRIVATE_KEY\")" >/dev/null
+"${CLAVIFABER[@]}" "ServerCertificateIssuance.{ “$KEYGRIP” $CA_CERTIFICATE faber.criome $SERVER_CERTIFICATE $SERVER_PRIVATE_KEY }" >/dev/null
 
 if [ ! -s "$SERVER_CERTIFICATE" ] || [ ! -s "$SERVER_PRIVATE_KEY" ]; then
   echo "FAIL: server cert/key not created"
@@ -106,13 +106,13 @@ fi
 echo "    server certificate: $(wc -c <"$SERVER_CERTIFICATE") bytes"
 echo "    server private key: $(wc -c <"$SERVER_PRIVATE_KEY") bytes"
 
-"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$SERVER_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "CertificateChainVerification.{ $CA_CERTIFICATE $SERVER_CERTIFICATE }" >/dev/null
 echo "    verify chain: OK"
 
 echo ""
 echo "--- Phase 5: ClientCertificateIssuance ---"
 NODE_CERTIFICATE="$TEST_DIRECTORY/probus.pem"
-"${CLAVIFABER[@]}" "(ClientCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"$NODE_SSH_PUBLIC_KEY\" \"probus@aedifico\" \"$NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "ClientCertificateIssuance.{ “$KEYGRIP” $CA_CERTIFICATE “$NODE_SSH_PUBLIC_KEY” probus@aedifico $NODE_CERTIFICATE }" >/dev/null
 
 if [ ! -s "$NODE_CERTIFICATE" ]; then
   echo "FAIL: node cert not created"
@@ -120,7 +120,7 @@ if [ ! -s "$NODE_CERTIFICATE" ]; then
 fi
 echo "    node certificate: $(wc -c <"$NODE_CERTIFICATE") bytes"
 
-"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "CertificateChainVerification.{ $CA_CERTIFICATE $NODE_CERTIFICATE }" >/dev/null
 echo "    verify chain: OK"
 NODE_SUBJECT=$(openssl x509 -in "$NODE_CERTIFICATE" -noout -subject 2>/dev/null || echo "PARSE_FAIL")
 echo "    openssl subject: $NODE_SUBJECT"
@@ -133,17 +133,17 @@ ssh-keygen -t ed25519 -f "$SECOND_NODE_DIRECTORY/ssh_host_ed25519_key" -N "" -C 
 SECOND_NODE_SSH_PUBLIC_KEY=$(cat "$SECOND_NODE_DIRECTORY/ssh_host_ed25519_key.pub")
 
 SECOND_NODE_CERTIFICATE="$TEST_DIRECTORY/faber-node.pem"
-"${CLAVIFABER[@]}" "(ClientCertificateIssuance \"$KEYGRIP\" \"$CA_CERTIFICATE\" \"$SECOND_NODE_SSH_PUBLIC_KEY\" \"faber@aedifico\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "ClientCertificateIssuance.{ “$KEYGRIP” $CA_CERTIFICATE “$SECOND_NODE_SSH_PUBLIC_KEY” faber@aedifico $SECOND_NODE_CERTIFICATE }" >/dev/null
 
-"${CLAVIFABER[@]}" "(CertificateChainVerification \"$CA_CERTIFICATE\" \"$SECOND_NODE_CERTIFICATE\")" >/dev/null
+"${CLAVIFABER[@]}" "CertificateChainVerification.{ $CA_CERTIFICATE $SECOND_NODE_CERTIFICATE }" >/dev/null
 echo "    second node cert verified: OK"
 
 echo ""
 echo "--- Phase 7: YggdrasilKeypairSetup + PublicKeyPublicationWriting ---"
 YGGDRASIL_KEYPAIR="$TEST_DIRECTORY/yggdrasil/keypair.json"
-PUBLICATION="$TEST_DIRECTORY/publication.dotos"
+PUBLICATION="$TEST_DIRECTORY/publication.datom"
 
-"${CLAVIFABER[@]}" "(YggdrasilKeypairSetup \"$YGGDRASIL_KEYPAIR\")" >/dev/null
+"${CLAVIFABER[@]}" "YggdrasilKeypairSetup.{ $YGGDRASIL_KEYPAIR }" >/dev/null
 
 if [ ! -s "$YGGDRASIL_KEYPAIR" ]; then
   echo "FAIL: yggdrasil keypair not created"
@@ -159,7 +159,7 @@ echo "    yggdrasil keypair mode 0600: OK"
 
 # Idempotency: re-running keeps the same keypair.
 YGGDRASIL_BEFORE=$(cat "$YGGDRASIL_KEYPAIR")
-"${CLAVIFABER[@]}" "(YggdrasilKeypairSetup \"$YGGDRASIL_KEYPAIR\")" >/dev/null
+"${CLAVIFABER[@]}" "YggdrasilKeypairSetup.{ $YGGDRASIL_KEYPAIR }" >/dev/null
 YGGDRASIL_AFTER=$(cat "$YGGDRASIL_KEYPAIR")
 if [ "$YGGDRASIL_BEFORE" != "$YGGDRASIL_AFTER" ]; then
   echo "FAIL: yggdrasil keypair rotated under re-run (must stay stable)"
@@ -168,37 +168,37 @@ fi
 echo "    yggdrasil keypair stable across re-run: OK"
 
 # Publication assembles typed yggdrasil projection + sshd-managed ssh.pub.
-"${CLAVIFABER[@]}" "(PublicKeyPublicationWriting probus (OpenSshPublicKeyLocation \"$NODE_DIRECTORY/ssh_host_ed25519_key.pub\") (YggdrasilKeypairLocation \"$YGGDRASIL_KEYPAIR\") None \"$PUBLICATION\")" >/dev/null
+"${CLAVIFABER[@]}" "PublicKeyPublicationWriting.{ probus { $NODE_DIRECTORY/ssh_host_ed25519_key.pub } { $YGGDRASIL_KEYPAIR } None $PUBLICATION }" >/dev/null
 
 if [ ! -s "$PUBLICATION" ]; then
-  echo "FAIL: publication.dotos not written"
+  echo "FAIL: publication.datom not written"
   exit 1
 fi
-echo "    publication.dotos: $(wc -c <"$PUBLICATION") bytes"
+echo "    publication.datom: $(wc -c <"$PUBLICATION") bytes"
 
 PUBLICATION_MODE=$(stat -c %a "$PUBLICATION")
 if [ "$PUBLICATION_MODE" != "644" ]; then
-  echo "FAIL: publication.dotos mode is $PUBLICATION_MODE, expected 644"
+  echo "FAIL: publication.datom mode is $PUBLICATION_MODE, expected 644"
   exit 1
 fi
-echo "    publication.dotos mode 0644: OK"
+echo "    publication.datom mode 0644: OK"
 
 if ! grep -qF "$NODE_SSH_PUBLIC_KEY" "$PUBLICATION"; then
-  echo "FAIL: publication.dotos does not carry sshd's host pubkey verbatim"
+  echo "FAIL: publication.datom does not carry sshd's host pubkey verbatim"
   cat "$PUBLICATION"
   exit 1
 fi
 echo "    publication carries sshd-managed ssh.pub: OK"
 
 if ! grep -qE '[0-9a-f]{64}' "$PUBLICATION"; then
-  echo "FAIL: publication.dotos missing yggdrasil public key (64-hex)"
+  echo "FAIL: publication.datom missing yggdrasil public key (64-hex)"
   cat "$PUBLICATION"
   exit 1
 fi
 echo "    publication carries yggdrasil hex public key: OK"
 
 if ! grep -q 'YggdrasilProjection' "$PUBLICATION"; then
-  echo "FAIL: publication.dotos missing typed YggdrasilProjection record"
+  echo "FAIL: publication.datom missing typed YggdrasilProjection record"
   cat "$PUBLICATION"
   exit 1
 fi

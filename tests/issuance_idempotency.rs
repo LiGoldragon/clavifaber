@@ -18,6 +18,8 @@ use clavifaber::request::{
     CertificateAuthorityIssuance, ClaviFaberRequest, ClaviFaberResponse, ClientCertificateIssuance,
     ServerCertificateIssuance,
 };
+use datom_codec::{Actualizable, IncorporationBudget, Potential};
+use protos::Textualizable;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -44,7 +46,7 @@ MC4CAQAwBQYDK2VwBCIEIApF2z/vIhwA+qC4OUeQn8yLfolX/Y2fDS+4PCW+4R7i\n\
 
 fn run(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
-        .arg(request.to_dotos().expect("encode request"))
+        .arg(request.textualize())
         .output()
         .expect("run clavifaber")
 }
@@ -57,8 +59,18 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn directory_text(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+fn text(value: impl AsRef<str>) -> protos::Text {
+    protos::Text::try_from(value.as_ref()).expect("fixture text")
+}
+
+fn directory_text(path: &Path) -> protos::Text {
+    text(path.to_string_lossy())
+}
+
+fn decode_response(source: &str) -> ClaviFaberResponse {
+    Potential::<ClaviFaberResponse>::from(source.to_owned())
+        .actualize(IncorporationBudget::try_from(4_096).expect("positive budget"))
+        .expect("decode response")
 }
 
 // ─── Valid existing files → skip ─────────────────────────────────
@@ -69,11 +81,11 @@ fn certificate_authority_issuance_skips_when_output_is_valid_cert() {
     let output_path = temporary_directory.path().join("ca.pem");
     fs::write(&output_path, FIXTURE_CERT_PEM).expect("seed CA file");
 
-    let request = ClaviFaberRequest::CertificateAuthorityIssuance(CertificateAuthorityIssuance {
-        keygrip: "BOGUS".to_string(),
-        common_name: "irrelevant".to_string(),
-        output: directory_text(&output_path),
-    });
+    let request = ClaviFaberRequest::CertificateAuthorityIssuance(CertificateAuthorityIssuance(
+        text("BOGUS"),
+        text("irrelevant"),
+        directory_text(&output_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -82,7 +94,7 @@ fn certificate_authority_issuance_skips_when_output_is_valid_cert() {
         stderr_text(&output)
     );
 
-    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
+    let response = decode_response(&stdout_text(&output));
     assert!(matches!(
         response,
         ClaviFaberResponse::CertificateAuthorityCertificateWritten(_)
@@ -103,15 +115,13 @@ fn server_certificate_issuance_skips_when_output_files_are_valid() {
     fs::write(&certificate_path, FIXTURE_CERT_PEM).expect("seed server cert");
     fs::write(&private_key_path, FIXTURE_PRIVATE_KEY_PEM).expect("seed server key");
 
-    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        common_name: "irrelevant".to_string(),
-        output_certificate: directory_text(&certificate_path),
-        output_private_key: directory_text(&private_key_path),
-    });
+    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("irrelevant"),
+        directory_text(&certificate_path),
+        directory_text(&private_key_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -119,7 +129,7 @@ fn server_certificate_issuance_skips_when_output_files_are_valid() {
         "skip path must succeed without gpg-agent; stderr: {}",
         stderr_text(&output)
     );
-    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
+    let response = decode_response(&stdout_text(&output));
     assert!(matches!(
         response,
         ClaviFaberResponse::ServerCertificateWritten(_)
@@ -143,15 +153,13 @@ fn client_certificate_issuance_skips_when_output_is_valid_cert() {
     let output_path = temporary_directory.path().join("client.pem");
     fs::write(&output_path, FIXTURE_CERT_PEM).expect("seed client cert");
 
-    let request = ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        open_ssh_public_key: "ssh-ed25519 IGNORED node".to_string(),
-        common_name: "irrelevant".to_string(),
-        output: directory_text(&output_path),
-    });
+    let request = ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("ssh-ed25519 IGNORED node"),
+        text("irrelevant"),
+        directory_text(&output_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -159,7 +167,7 @@ fn client_certificate_issuance_skips_when_output_is_valid_cert() {
         "skip path must succeed without gpg-agent; stderr: {}",
         stderr_text(&output)
     );
-    let response = ClaviFaberResponse::from_dotos(&stdout_text(&output)).expect("decode response");
+    let response = decode_response(&stdout_text(&output));
     assert!(matches!(
         response,
         ClaviFaberResponse::ClientCertificateWritten(_)
@@ -180,11 +188,11 @@ fn certificate_authority_issuance_fails_loudly_when_output_unparseable() {
     let output_path = temporary_directory.path().join("ca.pem");
     fs::write(&output_path, b"GARBAGE-NOT-A-PEM-CERT").expect("seed garbage");
 
-    let request = ClaviFaberRequest::CertificateAuthorityIssuance(CertificateAuthorityIssuance {
-        keygrip: "BOGUS".to_string(),
-        common_name: "irrelevant".to_string(),
-        output: directory_text(&output_path),
-    });
+    let request = ClaviFaberRequest::CertificateAuthorityIssuance(CertificateAuthorityIssuance(
+        text("BOGUS"),
+        text("irrelevant"),
+        directory_text(&output_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -211,15 +219,13 @@ fn client_certificate_issuance_fails_loudly_when_output_unparseable() {
     let output_path = temporary_directory.path().join("client.pem");
     fs::write(&output_path, b"GARBAGE-NOT-A-PEM-CERT").expect("seed garbage");
 
-    let request = ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        open_ssh_public_key: "ssh-ed25519 IGNORED node".to_string(),
-        common_name: "irrelevant".to_string(),
-        output: directory_text(&output_path),
-    });
+    let request = ClaviFaberRequest::ClientCertificateIssuance(ClientCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("ssh-ed25519 IGNORED node"),
+        text("irrelevant"),
+        directory_text(&output_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -247,15 +253,13 @@ fn server_certificate_issuance_fails_loudly_when_cert_unparseable() {
     fs::write(&certificate_path, b"GARBAGE-NOT-A-PEM-CERT").expect("seed garbage cert");
     fs::write(&private_key_path, FIXTURE_PRIVATE_KEY_PEM).expect("seed valid key");
 
-    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        common_name: "irrelevant".to_string(),
-        output_certificate: directory_text(&certificate_path),
-        output_private_key: directory_text(&private_key_path),
-    });
+    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("irrelevant"),
+        directory_text(&certificate_path),
+        directory_text(&private_key_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -277,15 +281,13 @@ fn server_certificate_issuance_fails_loudly_when_key_unparseable() {
     fs::write(&certificate_path, FIXTURE_CERT_PEM).expect("seed valid cert");
     fs::write(&private_key_path, b"GARBAGE-NOT-A-PRIVATE-KEY").expect("seed garbage key");
 
-    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        common_name: "irrelevant".to_string(),
-        output_certificate: directory_text(&certificate_path),
-        output_private_key: directory_text(&private_key_path),
-    });
+    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("irrelevant"),
+        directory_text(&certificate_path),
+        directory_text(&private_key_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -309,15 +311,13 @@ fn server_certificate_issuance_fails_loudly_on_half_existence_cert_present() {
     fs::write(&certificate_path, FIXTURE_CERT_PEM).expect("seed cert only");
     // private_key_path intentionally not created.
 
-    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        common_name: "irrelevant".to_string(),
-        output_certificate: directory_text(&certificate_path),
-        output_private_key: directory_text(&private_key_path),
-    });
+    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("irrelevant"),
+        directory_text(&certificate_path),
+        directory_text(&private_key_path),
+    ));
 
     let output = run(&request);
     assert!(
@@ -345,15 +345,13 @@ fn server_certificate_issuance_fails_loudly_on_half_existence_key_present() {
     fs::write(&private_key_path, FIXTURE_PRIVATE_KEY_PEM).expect("seed key only");
     // certificate_path intentionally not created.
 
-    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance {
-        certificate_authority_keygrip: "BOGUS".to_string(),
-        certificate_authority_certificate: directory_text(
-            &temporary_directory.path().join("nonexistent-ca.pem"),
-        ),
-        common_name: "irrelevant".to_string(),
-        output_certificate: directory_text(&certificate_path),
-        output_private_key: directory_text(&private_key_path),
-    });
+    let request = ClaviFaberRequest::ServerCertificateIssuance(ServerCertificateIssuance(
+        text("BOGUS"),
+        directory_text(&temporary_directory.path().join("nonexistent-ca.pem")),
+        text("irrelevant"),
+        directory_text(&certificate_path),
+        directory_text(&private_key_path),
+    ));
 
     let output = run(&request);
     assert!(

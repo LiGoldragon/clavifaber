@@ -8,6 +8,11 @@
       url = "github:LiGoldragon/rust-build";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    ethos-zero = {
+      url = "github:LiGoldragon/ethos-zero/bcf728bbe4521e663f4773d3c1fd4ebb643df32e";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -15,6 +20,7 @@
       self,
       nixpkgs,
       rust-build,
+      ethos-zero,
     }:
     let
       systems = [
@@ -146,6 +152,17 @@
               cargoClippyExtraArgs = "--all-targets -- -D warnings";
             }
           );
+          generated = context.pkgs.runCommand "clavifaber-generated" {
+            nativeBuildInputs = [
+              ethos-zero.packages.${system}.default
+              context.pkgs.diffutils
+            ];
+          } ''
+            mkdir -p "$TMPDIR/generated"
+            ethos-zero "Generate.{ ${./ethos/clavifaber.ethos} $TMPDIR/generated }"
+            diff -u ${./src/generated/clavifaber.rs} "$TMPDIR/generated/clavifaber.rs"
+            touch "$out"
+          '';
         }
       );
 

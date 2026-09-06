@@ -1,19 +1,21 @@
-//! Witness that `PublicKeyPublicationWriting` reads sshd's host key
-//! from disk (clavifaber does NOT create or own the SSH host key
-//! anymore — that's sshd's concern) and assembles the publication
-//! with typed `YggdrasilProjection` and `WifiClientCertificate`
-//! wrappers.
+//! Public Datom publication assembly from an sshd-owned host key.
 
 use clavifaber::publication::PublicKeyPublication;
 use clavifaber::request::{
     ClaviFaberRequest, OpenSshPublicKeyLocation, PublicKeyPublicationWriting,
     WifiClientCertificateLocation, YggdrasilKeypairLocation, YggdrasilKeypairSetup,
 };
+use datom_codec::{Actualizable, IncorporationBudget, Potential};
+use protos::Textualizable;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
+
+fn text(value: impl AsRef<str>) -> protos::Text {
+    protos::Text::try_from(value.as_ref()).expect("fixture text")
+}
 
 struct Fixture {
     temporary_directory: TempDir,
@@ -25,34 +27,26 @@ impl Fixture {
             temporary_directory: TempDir::new().expect("tempdir"),
         }
     }
-
     fn ssh_host_key(&self) -> PathBuf {
         self.temporary_directory.path().join("ssh_host_ed25519_key")
     }
-
     fn ssh_host_key_pub(&self) -> PathBuf {
         self.temporary_directory
             .path()
             .join("ssh_host_ed25519_key.pub")
     }
-
     fn yggdrasil_keypair(&self) -> PathBuf {
         self.temporary_directory
             .path()
             .join("yggdrasil/keypair.json")
     }
-
     fn wifi_client_cert(&self) -> PathBuf {
         self.temporary_directory.path().join("wifi-client.pem")
     }
-
     fn publication(&self) -> PathBuf {
-        self.temporary_directory.path().join("publication.dotos")
+        self.temporary_directory.path().join("publication.datom")
     }
 
-    /// Fabricate an SSH host key the way sshd would have, before
-    /// clavifaber runs. ssh-keygen writes both the private key and
-    /// the `.pub` file; clavifaber will read only the `.pub` file.
     fn generate_ssh_host_key(&self) {
         let status = Command::new("ssh-keygen")
             .args([
@@ -74,7 +68,7 @@ impl Fixture {
 
 fn run(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
-        .arg(request.to_dotos().expect("encode request"))
+        .arg(request.textualize())
         .output()
         .expect("run clavifaber")
 }
@@ -82,15 +76,24 @@ fn run(request: &ClaviFaberRequest) -> Output {
 fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
-
-fn directory_text(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+fn path_text(path: &Path) -> protos::Text {
+    text(path.to_string_lossy())
 }
 
-fn decode_publication(text: &str) -> PublicKeyPublication {
-    dotos::DotosSource::new(text)
-        .parse()
-        .expect("decode publication.dotos")
+fn decode_publication(source: &str) -> PublicKeyPublication {
+    Potential::<PublicKeyPublication>::from(source.to_owned())
+        .actualize(IncorporationBudget::try_from(4_096).expect("positive budget"))
+        .expect("decode publication.datom")
+}
+
+fn publication_request(fixture: &Fixture, yggdrasil: bool, wifi: bool) -> ClaviFaberRequest {
+    ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting(
+        text("probus"),
+        OpenSshPublicKeyLocation(path_text(&fixture.ssh_host_key_pub())),
+        yggdrasil.then(|| YggdrasilKeypairLocation(path_text(&fixture.yggdrasil_keypair()))),
+        wifi.then(|| WifiClientCertificateLocation(path_text(&fixture.wifi_client_cert()))),
+        path_text(&fixture.publication()),
+    ))
 }
 
 #[test]
@@ -98,50 +101,27 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
     let fixture = Fixture::new();
     fixture.generate_ssh_host_key();
 
-    // Seed the yggdrasil keypair.
     let yggdrasil = run(&ClaviFaberRequest::YggdrasilKeypairSetup(
-        YggdrasilKeypairSetup {
-            keypair_path: directory_text(&fixture.yggdrasil_keypair()),
-        },
+        YggdrasilKeypairSetup(path_text(&fixture.yggdrasil_keypair())),
     ));
     assert!(
         yggdrasil.status.success(),
         "stderr: {}",
         stderr_text(&yggdrasil)
     );
-
-    // Seed a fake wifi client cert PEM with newlines; dotos-next emits
-    // bracket-safe strings instead of quote-delimited strings.
     fs::write(
         fixture.wifi_client_cert(),
         b"-----BEGIN CERTIFICATE-----\nMARKER\n-----END CERTIFICATE-----\n",
     )
     .expect("seed wifi client cert");
 
-    // Write the publication, pointing at the host key sshd would
-    // have created.
-    let writing = run(&ClaviFaberRequest::PublicKeyPublicationWriting(
-        PublicKeyPublicationWriting {
-            node_name: "probus".to_string(),
-            open_ssh_public_key: OpenSshPublicKeyLocation {
-                path: directory_text(&fixture.ssh_host_key_pub()),
-            },
-            yggdrasil_keypair: Some(YggdrasilKeypairLocation {
-                keypair_path: directory_text(&fixture.yggdrasil_keypair()),
-            }),
-            wifi_client_certificate: Some(WifiClientCertificateLocation {
-                certificate_path: directory_text(&fixture.wifi_client_cert()),
-            }),
-            publication_output: directory_text(&fixture.publication()),
-        },
-    ));
+    let writing = run(&publication_request(&fixture, true, true));
     assert!(
         writing.status.success(),
         "stderr: {}",
         stderr_text(&writing)
     );
 
-    // Mode 0644 (publicly readable per the haywire-stage cluster contract).
     let mode = fs::metadata(fixture.publication())
         .expect("publication metadata")
         .permissions()
@@ -149,105 +129,68 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         & 0o777;
     assert_eq!(
         mode, 0o644,
-        "publication.dotos must be mode 0644 (publicly readable for the haywire-stage SSH-collector pattern), got {mode:o}"
+        "publication.datom must be mode 0644, got {mode:o}"
     );
 
-    // Decode and assert typed fields.
-    let publication_text =
-        fs::read_to_string(fixture.publication()).expect("read publication.dotos");
-    let parsed = decode_publication(&publication_text);
-    assert_eq!(parsed.node_name, "probus");
-
-    // The publication's open_ssh_public_key should match the file
-    // sshd wrote, verbatim (the file's trailing newline is stripped).
+    let parsed = decode_publication(
+        &fs::read_to_string(fixture.publication()).expect("read publication.datom"),
+    );
+    assert_eq!(parsed.0, text("probus"));
     let ssh_pub_on_disk = fs::read_to_string(fixture.ssh_host_key_pub())
         .expect("read ssh.pub")
         .trim()
         .to_string();
     assert_eq!(
-        parsed.open_ssh_public_key, ssh_pub_on_disk,
-        "publication's open_ssh_public_key must match sshd's ssh.pub verbatim"
+        parsed.1,
+        text(&ssh_pub_on_disk),
+        "publication carries sshd's ssh.pub verbatim"
     );
-    assert!(
-        parsed.open_ssh_public_key.starts_with("ssh-ed25519 "),
-        "publication's open_ssh_public_key wrong shape: {}",
-        parsed.open_ssh_public_key
-    );
+    assert!(parsed.1.as_ref().starts_with("ssh-ed25519 "));
 
     let yggdrasil_projection = parsed
-        .yggdrasil
+        .2
         .expect("publication missing typed YggdrasilProjection");
     assert_eq!(
-        yggdrasil_projection.public_key.len(),
+        yggdrasil_projection.1.len(),
         64,
-        "yggdrasil public_key should be 64 hex chars, got {}: {}",
-        yggdrasil_projection.public_key.len(),
-        yggdrasil_projection.public_key
+        "yggdrasil public key is 64 hex chars"
     );
     assert!(
         yggdrasil_projection
-            .public_key
+            .1
+            .as_ref()
             .chars()
-            .all(|c| c.is_ascii_hexdigit()),
-        "yggdrasil public_key should be hex"
+            .all(|character| character.is_ascii_hexdigit())
     );
     let wifi_certificate = parsed
-        .wifi_client_certificate
+        .3
         .expect("publication missing typed WifiClientCertificate");
-    assert!(
-        wifi_certificate.pem.contains("BEGIN CERTIFICATE"),
-        "wifi_client_certificate.pem missing PEM marker: {}",
-        wifi_certificate.pem
-    );
+    assert!(wifi_certificate.0.as_ref().contains("BEGIN CERTIFICATE"));
 }
 
 #[test]
 fn public_key_publication_writing_omits_optional_planes_when_none() {
     let fixture = Fixture::new();
     fixture.generate_ssh_host_key();
-
-    let writing = run(&ClaviFaberRequest::PublicKeyPublicationWriting(
-        PublicKeyPublicationWriting {
-            node_name: "probus".to_string(),
-            open_ssh_public_key: OpenSshPublicKeyLocation {
-                path: directory_text(&fixture.ssh_host_key_pub()),
-            },
-            yggdrasil_keypair: None,
-            wifi_client_certificate: None,
-            publication_output: directory_text(&fixture.publication()),
-        },
-    ));
+    let writing = run(&publication_request(&fixture, false, false));
     assert!(
         writing.status.success(),
         "stderr: {}",
         stderr_text(&writing)
     );
-
-    let publication_text =
-        fs::read_to_string(fixture.publication()).expect("read publication.dotos");
-    let parsed = decode_publication(&publication_text);
-    assert_eq!(parsed.yggdrasil, None);
-    assert_eq!(parsed.wifi_client_certificate, None);
+    let parsed = decode_publication(
+        &fs::read_to_string(fixture.publication()).expect("read publication.datom"),
+    );
+    assert_eq!(parsed.2, None);
+    assert_eq!(parsed.3, None);
 }
 
 #[test]
 fn public_key_publication_writing_fails_when_ssh_host_key_missing() {
     let fixture = Fixture::new();
-    // Intentionally do NOT generate the ssh.pub file.
-
-    let writing = run(&ClaviFaberRequest::PublicKeyPublicationWriting(
-        PublicKeyPublicationWriting {
-            node_name: "probus".to_string(),
-            open_ssh_public_key: OpenSshPublicKeyLocation {
-                path: directory_text(&fixture.ssh_host_key_pub()),
-            },
-            yggdrasil_keypair: None,
-            wifi_client_certificate: None,
-            publication_output: directory_text(&fixture.publication()),
-        },
-    ));
+    let writing = run(&publication_request(&fixture, false, false));
     assert!(
         !writing.status.success(),
-        "publication writing must fail when the named ssh.pub file is absent — clavifaber does NOT generate one"
+        "publication writing must fail when ssh.pub is absent; clavifaber does not generate it"
     );
 }

@@ -1,32 +1,11 @@
 //! Yggdrasil host identity material.
-//!
-//! ClaviFaber owns the per-host Yggdrasil keypair file and projects it
-//! to the public IPv6 address + hex public key consumed by other hosts.
-//!
-//! On-disk shape (mode 0600): a JSON object `{"PrivateKey": "<128 hex>"}`
-//! — the same shape CriomOS's existing `network/yggdrasil.nix` consumes
-//! via `preCriadJson` (it merges this file with the runtime network
-//! overlay before invoking yggdrasild).
-//!
-//! Public projection is derived **statically** by invoking
-//! `yggdrasil -useconffile <keypair_path> -publickey -address`. The
-//! daemon is never started by clavifaber.
 
 use crate::error::{Error, Result};
 use crate::util::AtomicFile;
-use dotos::{DotosDecode, DotosEncode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The static public projection of the per-host Yggdrasil keypair:
-/// IPv6 address (200::/7 range) + 64-hex public key. Derived from
-/// the keypair file by invoking `yggdrasil -useconffile <file>
-/// -publickey -address` (no daemon).
-#[derive(Debug, Clone, PartialEq, Eq, DotosDecode, DotosEncode)]
-pub struct YggdrasilProjection {
-    pub address: String,
-    pub public_key: String,
-}
+pub use crate::generated::clavifaber::YggdrasilProjection;
 
 pub struct YggdrasilKeypairFile {
     path: PathBuf,
@@ -36,18 +15,13 @@ impl YggdrasilKeypairFile {
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
-
     pub fn exists(&self) -> bool {
         self.path.exists()
     }
 
-    /// Generate the keypair file if it does not already exist. The file
-    /// is written atomically with mode 0600. Idempotent: returns
-    /// quickly when the file is already present.
     pub fn ensure(&self, yggdrasil_binary: &str) -> Result<()> {
         if self.exists() {
             return Ok(());
@@ -72,20 +46,20 @@ impl YggdrasilKeypairFile {
             )));
         }
         let private_key = extract_private_key(&output.stdout)?;
-        let keypair_json = format!("{{\"PrivateKey\":\"{private_key}\"}}\n");
-        AtomicFile::new(self.path.clone()).write_bytes(keypair_json.as_bytes(), 0o600)
+        AtomicFile::new(self.path.clone()).write_bytes(
+            format!("{{\"PrivateKey\":\"{private_key}\"}}\n").as_bytes(),
+            0o600,
+        )
     }
 
-    /// Derive the public projection by invoking yggdrasil statically
-    /// against the persisted keypair file. Requires the keypair file
-    /// to exist; call `ensure` first.
     pub fn projection(&self, yggdrasil_binary: &str) -> Result<YggdrasilProjection> {
         let public_key = self.derive(yggdrasil_binary, "-publickey")?;
         let address = self.derive(yggdrasil_binary, "-address")?;
-        Ok(YggdrasilProjection {
-            public_key,
-            address,
-        })
+        Ok(YggdrasilProjection(
+            protos::Text::try_from(address).map_err(|error| Error::Yggdrasil(error.to_string()))?,
+            protos::Text::try_from(public_key)
+                .map_err(|error| Error::Yggdrasil(error.to_string()))?,
+        ))
     }
 
     fn derive(&self, yggdrasil_binary: &str, flag: &str) -> Result<String> {

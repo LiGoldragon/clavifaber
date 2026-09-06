@@ -21,11 +21,11 @@ pub enum Error {
     #[error("certificate: {0}")]
     Certificate(String),
 
-    #[error("dotos: {0}")]
-    Dotos(#[from] dotos::DotosDecodeError),
+    #[error("datom: {0:?}")]
+    Datom(datom_codec::Fault),
 
-    #[error("inline Dotos argument must be UTF-8: {got}")]
-    InvalidInlineDotosArgument { got: String },
+    #[error("inline Datom argument must be UTF-8: {got}")]
+    InvalidInlineDatomArgument { got: String },
 
     #[error("state: {0}")]
     State(String),
@@ -37,6 +37,12 @@ pub enum Error {
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Parse(s)
+    }
+}
+
+impl From<datom_codec::Fault> for Error {
+    fn from(fault: datom_codec::Fault) -> Self {
+        Self::Datom(fault)
     }
 }
 
