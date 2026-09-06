@@ -133,8 +133,8 @@ if [ -e "$STATE_DIR/key.pem" ]; then
   exit 1
 fi
 
-if ! grep -q 'PublicKeyPublication' "$PUBLICATION"; then
-  echo "FAIL: publication.datom missing PublicKeyPublication record"
+if ! grep -qE '^\{ bwrap-host ' "$PUBLICATION"; then
+  echo "FAIL: publication.datom is not the direct generated public record"
   exit 1
 fi
 if ! grep -q 'bwrap-host' "$PUBLICATION"; then
