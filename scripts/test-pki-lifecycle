@@ -168,7 +168,7 @@ fi
 echo "    yggdrasil keypair stable across re-run: OK"
 
 # Publication assembles typed yggdrasil projection + sshd-managed ssh.pub.
-"${CLAVIFABER[@]}" "PublicKeyPublicationWriting.{ probus { $NODE_DIRECTORY/ssh_host_ed25519_key.pub } { $YGGDRASIL_KEYPAIR } None $PUBLICATION }" >/dev/null
+"${CLAVIFABER[@]}" "PublicKeyPublicationWriting.{ probus { $NODE_DIRECTORY/ssh_host_ed25519_key.pub } Some.{ $YGGDRASIL_KEYPAIR } None $PUBLICATION }" >/dev/null
 
 if [ ! -s "$PUBLICATION" ]; then
   echo "FAIL: publication.datom not written"

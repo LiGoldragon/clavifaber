@@ -28,7 +28,7 @@ prints exactly one variant of `ClaviFaberResponse` on stdout.
 ```sh
 clavifaber 'CertificateAuthorityIssuance.{ “ABC123” “Cluster CA” /var/lib/clavifaber/ca.pem }'
 clavifaber 'YggdrasilKeypairSetup.{ /var/lib/clavifaber/yggdrasil/keypair.json }'
-clavifaber 'PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } { /var/lib/clavifaber/yggdrasil/keypair.json } None /var/lib/clavifaber/publication.datom }'
+clavifaber 'PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } Some.{ /var/lib/clavifaber/yggdrasil/keypair.json } None /var/lib/clavifaber/publication.datom }'
 ```
 
 The outer request variant delegates to one braced payload. A product payload
