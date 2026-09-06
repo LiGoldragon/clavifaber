@@ -160,7 +160,9 @@
           } ''
             mkdir -p "$TMPDIR/generated"
             ethos-zero "Generate.{ ${./ethos/clavifaber.ethos} $TMPDIR/generated }"
-            diff -u ${./src/generated/clavifaber.rs} "$TMPDIR/generated/clavifaber.rs"
+            generated=$(find "$TMPDIR/generated" -type f -name '*.rs')
+            test "$(printf '%s\n' "$generated" | wc -l)" -eq 1
+            diff -u ${./src/generated/clavifaber.rs} "$generated"
             touch "$out"
           '';
         }
