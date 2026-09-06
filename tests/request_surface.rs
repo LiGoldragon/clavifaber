@@ -65,6 +65,25 @@ fn every_request_variant_round_trips_through_current_datom() {
 }
 
 #[test]
+fn documented_operator_examples_decode_without_execution() {
+    let examples = [
+        "CertificateAuthorityIssuance.{ “ABC123” “Cluster CA” /var/lib/clavifaber/ca.pem }",
+        "ServerCertificateIssuance.{ “ABC123” /var/lib/clavifaber/ca.pem faber.criome /var/lib/clavifaber/server.pem /var/lib/clavifaber/server.key }",
+        "ClientCertificateIssuance.{ “ABC123” /var/lib/clavifaber/ca.pem “ssh-ed25519 AAAA host” probus@aedifico /var/lib/clavifaber/client.pem }",
+        "CertificateChainVerification.{ /var/lib/clavifaber/ca.pem /var/lib/clavifaber/client.pem }",
+        "YggdrasilKeypairSetup.{ /var/lib/clavifaber/yggdrasil/keypair.json }",
+        "PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } Some.{ /var/lib/clavifaber/yggdrasil/keypair.json } None /var/lib/clavifaber/publication.datom }",
+    ];
+
+    for example in examples {
+        assert!(
+            ClaviFaberRequest::decode(example).is_ok(),
+            "documented form must decode: {example}"
+        );
+    }
+}
+
+#[test]
 fn cli_datoms_use_one_root_variant_with_a_structural_payload() {
     let encoded = publication_request().textualize();
     assert_eq!(
