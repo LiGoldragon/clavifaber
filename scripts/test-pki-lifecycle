@@ -197,12 +197,12 @@ if ! grep -qE '[0-9a-f]{64}' "$PUBLICATION"; then
 fi
 echo "    publication carries yggdrasil hex public key: OK"
 
-if ! grep -q 'YggdrasilProjection' "$PUBLICATION"; then
-  echo "FAIL: publication.datom missing typed YggdrasilProjection record"
+if ! grep -qE 'Some\.\{ [^ ]+ [0-9a-f]{64} \}' "$PUBLICATION"; then
+  echo "FAIL: publication.datom missing the optional Yggdrasil projection"
   cat "$PUBLICATION"
   exit 1
 fi
-echo "    publication carries typed YggdrasilProjection record: OK"
+echo "    publication carries optional Yggdrasil projection: OK"
 
 echo ""
 echo "=== ALL TESTS PASSED ==="

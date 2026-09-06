@@ -132,9 +132,17 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         "publication.datom must be mode 0644, got {mode:o}"
     );
 
-    let parsed = decode_publication(
-        &fs::read_to_string(fixture.publication()).expect("read publication.datom"),
+    let publication_text =
+        fs::read_to_string(fixture.publication()).expect("read publication.datom");
+    assert!(
+        publication_text.starts_with("{ "),
+        "the public file is a direct generated product, not a request envelope"
     );
+    assert!(
+        !publication_text.contains("PublicKeyPublication"),
+        "the public file is not a nominal compatibility wrapper"
+    );
+    let parsed = decode_publication(&publication_text);
     assert_eq!(parsed.0, text("probus"));
     let ssh_pub_on_disk = fs::read_to_string(fixture.ssh_host_key_pub())
         .expect("read ssh.pub")
