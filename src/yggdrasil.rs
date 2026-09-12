@@ -55,11 +55,10 @@ impl YggdrasilKeypairFile {
     pub fn projection(&self, yggdrasil_binary: &str) -> Result<YggdrasilProjection> {
         let public_key = self.derive(yggdrasil_binary, "-publickey")?;
         let address = self.derive(yggdrasil_binary, "-address")?;
-        Ok(YggdrasilProjection(
-            protos::Text::try_from(address).map_err(|error| Error::Yggdrasil(error.to_string()))?,
-            protos::Text::try_from(public_key)
-                .map_err(|error| Error::Yggdrasil(error.to_string()))?,
-        ))
+        Ok(YggdrasilProjection {
+            first_string: address,
+            second_string: public_key,
+        })
     }
 
     fn derive(&self, yggdrasil_binary: &str, flag: &str) -> Result<String> {

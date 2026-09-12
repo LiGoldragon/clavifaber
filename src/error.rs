@@ -22,7 +22,7 @@ pub enum Error {
     Certificate(String),
 
     #[error("datom: {0:?}")]
-    Datom(datom_codec::Fault),
+    Datom(datom_codec::Error),
 
     #[error("inline Datom argument must be UTF-8: {got}")]
     InvalidInlineDatomArgument { got: String },
@@ -40,9 +40,9 @@ impl From<String> for Error {
     }
 }
 
-impl From<datom_codec::Fault> for Error {
-    fn from(fault: datom_codec::Fault) -> Self {
-        Self::Datom(fault)
+impl From<datom_codec::Error> for Error {
+    fn from(error: datom_codec::Error) -> Self {
+        Self::Datom(error)
     }
 }
 

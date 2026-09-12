@@ -1,6 +1,6 @@
 use clavifaber::error::Result;
 use clavifaber::request::CommandLine;
-use protos::Textualizable;
+use clavifaber::text::DatomTexting;
 
 #[tokio::main]
 async fn main() {
@@ -13,6 +13,6 @@ async fn main() {
 async fn run() -> Result<()> {
     let request = CommandLine::from_env().parse_request()?;
     let response = request.execute().await?;
-    println!("{}", response.textualize());
+    println!("{}", response.datom_text());
     Ok(())
 }

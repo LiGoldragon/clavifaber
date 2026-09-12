@@ -19,8 +19,7 @@ clavifaber 'PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key
 
 The CLI accepts one generated `ClaviFaberRequest` Datom per invocation and
 prints one generated `ClaviFaberResponse` Datom. The public publication is a
-direct `PublicKeyPublication` Datom at `publication.datom`; retained
-`publication.dotos` files are not read or rewritten.
+direct `PublicKeyPublication` Datom at `publication.datom`.
 
 ## Development
 

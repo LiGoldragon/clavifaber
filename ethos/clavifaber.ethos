@@ -1,7 +1,7 @@
 ; Clavifaber's one-shot public request, reply, and publication records.
 ; The CLI and public publication file carry these values as Datom text.
-Types
-[ protos:[ Text ] ]
+Library
+[]
 [ ClaviFaberRequest.[ CertificateAuthorityIssuance.CertificateAuthorityIssuance
                        ServerCertificateIssuance.ServerCertificateIssuance
                        ClientCertificateIssuance.ClientCertificateIssuance
@@ -14,22 +14,23 @@ Types
                         CertificateChainVerified.CertificateChainVerified
                         YggdrasilKeypairSet.YggdrasilKeypairSet
                         PublicKeyPublicationWritten.PublicKeyPublicationWritten ]
-  CertificateAuthorityIssuance.{ Text Text Text }
-  CertificateAuthorityCertificateWritten.{ Text }
-  ServerCertificateIssuance.{ Text Text Text Text Text }
-  ServerCertificateWritten.{ Text Text }
-  ClientCertificateIssuance.{ Text Text Text Text Text }
-  ClientCertificateWritten.{ Text }
-  CertificateChainVerification.{ Text Text }
-  CertificateChainVerified.{ Text }
-  YggdrasilKeypairSetup.{ Text }
-  YggdrasilKeypairSet.{ Text YggdrasilProjection }
-  PublicKeyPublicationWriting.{ Text OpenSshPublicKeyLocation Option<YggdrasilKeypairLocation> Option<WifiClientCertificateLocation> Text }
-  OpenSshPublicKeyLocation.{ Text }
-  YggdrasilKeypairLocation.{ Text }
-  WifiClientCertificateLocation.{ Text }
-  PublicKeyPublicationWritten.{ Text }
-  PublicKeyPublication.{ Text Text Option<YggdrasilProjection> Option<WifiClientCertificate> }
-  WifiClientCertificate.{ Text }
-  YggdrasilProjection.{ Text Text } ]
+  CertificateAuthorityIssuance.{ String String String }
+  CertificateAuthorityCertificateWritten.{ String }
+  ServerCertificateIssuance.{ String String String String String }
+  ServerCertificateWritten.{ String String }
+  ClientCertificateIssuance.{ String String String String String }
+  ClientCertificateWritten.{ String }
+  CertificateChainVerification.{ String String }
+  CertificateChainVerified.{ String }
+  YggdrasilKeypairSetup.{ String }
+  YggdrasilKeypairSet.{ String YggdrasilProjection }
+  PublicKeyPublicationWriting.{ String OpenSshPublicKeyLocation Option<YggdrasilKeypairLocation> Option<WifiClientCertificateLocation> String }
+  OpenSshPublicKeyLocation.{ String }
+  YggdrasilKeypairLocation.{ String }
+  WifiClientCertificateLocation.{ String }
+  PublicKeyPublicationWritten.{ String }
+  PublicKeyPublication.{ String String Option<YggdrasilProjection> Option<WifiClientCertificate> }
+  WifiClientCertificate.{ String }
+  YggdrasilProjection.{ String String } ]
+[]
 []

@@ -5,6 +5,7 @@ mod gpg_agent;
 pub mod publication;
 pub mod request;
 pub mod ssh_key;
+pub mod text;
 pub mod util;
 pub mod x509;
 pub mod yggdrasil;

@@ -5,16 +5,25 @@ use clavifaber::request::{
     ClaviFaberRequest, OpenSshPublicKeyLocation, PublicKeyPublicationWriting,
     WifiClientCertificateLocation, YggdrasilKeypairLocation, YggdrasilKeypairSetup,
 };
-use datom_codec::{Actualizable, IncorporationBudget, Potential};
-use protos::Textualizable;
+use clavifaber::text::DatomTexting;
+use datom_codec::{Actualizing, Budget, Potential};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-fn text(value: impl AsRef<str>) -> protos::Text {
-    protos::Text::try_from(value.as_ref()).expect("fixture text")
+fn text(value: impl AsRef<str>) -> String {
+    value.as_ref().to_owned()
+}
+
+fn budget() -> Budget {
+    Budget {
+        remaining: 4_096,
+        reader: protos::ReaderBudget { remaining: 16_384 },
+        depth: 0,
+        maximum_depth: 4_096,
+    }
 }
 
 struct Fixture {
@@ -68,7 +77,7 @@ impl Fixture {
 
 fn run(request: &ClaviFaberRequest) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clavifaber"))
-        .arg(request.textualize())
+        .arg(request.datom_text())
         .output()
         .expect("run clavifaber")
 }
@@ -76,24 +85,30 @@ fn run(request: &ClaviFaberRequest) -> Output {
 fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
-fn path_text(path: &Path) -> protos::Text {
+fn path_text(path: &Path) -> String {
     text(path.to_string_lossy())
 }
 
 fn decode_publication(source: &str) -> PublicKeyPublication {
-    Potential::<PublicKeyPublication>::from(source.to_owned())
-        .actualize(IncorporationBudget::try_from(4_096).expect("positive budget"))
+    Potential::<PublicKeyPublication>::from(source)
+        .actualize(&mut budget())
         .expect("decode publication.datom")
 }
 
 fn publication_request(fixture: &Fixture, yggdrasil: bool, wifi: bool) -> ClaviFaberRequest {
-    ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting(
-        text("probus"),
-        OpenSshPublicKeyLocation(path_text(&fixture.ssh_host_key_pub())),
-        yggdrasil.then(|| YggdrasilKeypairLocation(path_text(&fixture.yggdrasil_keypair()))),
-        wifi.then(|| WifiClientCertificateLocation(path_text(&fixture.wifi_client_cert()))),
-        path_text(&fixture.publication()),
-    ))
+    ClaviFaberRequest::PublicKeyPublicationWriting(PublicKeyPublicationWriting {
+        first_string: text("probus"),
+        open_ssh_public_key_location: OpenSshPublicKeyLocation {
+            string: path_text(&fixture.ssh_host_key_pub()),
+        },
+        yggdrasil_keypair_location_option: yggdrasil.then(|| YggdrasilKeypairLocation {
+            string: path_text(&fixture.yggdrasil_keypair()),
+        }),
+        wifi_client_certificate_location_option: wifi.then(|| WifiClientCertificateLocation {
+            string: path_text(&fixture.wifi_client_cert()),
+        }),
+        second_string: path_text(&fixture.publication()),
+    })
 }
 
 #[test]
@@ -102,7 +117,9 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
     fixture.generate_ssh_host_key();
 
     let yggdrasil = run(&ClaviFaberRequest::YggdrasilKeypairSetup(
-        YggdrasilKeypairSetup(path_text(&fixture.yggdrasil_keypair())),
+        YggdrasilKeypairSetup {
+            string: path_text(&fixture.yggdrasil_keypair()),
+        },
     ));
     assert!(
         yggdrasil.status.success(),
@@ -143,37 +160,36 @@ fn public_key_publication_writing_assembles_typed_record_atomically() {
         "the public file is not a nominal compatibility wrapper"
     );
     let parsed = decode_publication(&publication_text);
-    assert_eq!(parsed.0, text("probus"));
+    assert_eq!(parsed.first_string, text("probus"));
     let ssh_pub_on_disk = fs::read_to_string(fixture.ssh_host_key_pub())
         .expect("read ssh.pub")
         .trim()
         .to_string();
     assert_eq!(
-        parsed.1,
+        parsed.second_string,
         text(&ssh_pub_on_disk),
         "publication carries sshd's ssh.pub verbatim"
     );
-    assert!(parsed.1.as_ref().starts_with("ssh-ed25519 "));
+    assert!(parsed.second_string.starts_with("ssh-ed25519 "));
 
     let yggdrasil_projection = parsed
-        .2
+        .yggdrasil_projection_option
         .expect("publication missing typed YggdrasilProjection");
     assert_eq!(
-        yggdrasil_projection.1.len(),
+        yggdrasil_projection.second_string.len(),
         64,
         "yggdrasil public key is 64 hex chars"
     );
     assert!(
         yggdrasil_projection
-            .1
-            .as_ref()
+            .second_string
             .chars()
             .all(|character| character.is_ascii_hexdigit())
     );
     let wifi_certificate = parsed
-        .3
+        .wifi_client_certificate_option
         .expect("publication missing typed WifiClientCertificate");
-    assert!(wifi_certificate.0.as_ref().contains("BEGIN CERTIFICATE"));
+    assert!(wifi_certificate.string.contains("BEGIN CERTIFICATE"));
 }
 
 #[test]
@@ -189,8 +205,8 @@ fn public_key_publication_writing_omits_optional_planes_when_none() {
     let parsed = decode_publication(
         &fs::read_to_string(fixture.publication()).expect("read publication.datom"),
     );
-    assert_eq!(parsed.2, None);
-    assert_eq!(parsed.3, None);
+    assert_eq!(parsed.yggdrasil_projection_option, None);
+    assert_eq!(parsed.wifi_client_certificate_option, None);
 }
 
 #[test]

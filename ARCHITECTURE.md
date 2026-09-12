@@ -26,16 +26,16 @@ Each request kind has exactly one variant in `ClaviFaberRequest` and
 prints exactly one variant of `ClaviFaberResponse` on stdout.
 
 ```sh
-clavifaber 'CertificateAuthorityIssuance.{ “ABC123” “Cluster CA” /var/lib/clavifaber/ca.pem }'
+clavifaber 'CertificateAuthorityIssuance.{ «ABC123» «Cluster CA» /var/lib/clavifaber/ca.pem }'
 clavifaber 'YggdrasilKeypairSetup.{ /var/lib/clavifaber/yggdrasil/keypair.json }'
 clavifaber 'PublicKeyPublicationWriting.{ probus { /etc/ssh/ssh_host_ed25519_key.pub } Some.{ /var/lib/clavifaber/yggdrasil/keypair.json } None /var/lib/clavifaber/publication.datom }'
 ```
 
 The outer request variant delegates to one braced payload. A product payload
-uses space-separated fields; `Text` that contains whitespace is curly-quoted.
+uses space-separated fields; a string that contains whitespace or a delimiter
+is written between guillemets, «like this».
 The public file is the direct `PublicKeyPublication` Datom, not a request or
-reply envelope. `publication.dotos` is a retained legacy file name only: this
-version neither reads it as `publication.datom` nor rewrites it.
+reply envelope, and it is written at `publication.datom`.
 
 The six request kinds:
 

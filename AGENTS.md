@@ -19,5 +19,5 @@ CriomOS for WiFi EAP-TLS and node SSH key derivation.
 ## Protos estate status
 
 Stack: correct-new destination
-Status: active component, current checkout legacy-wired
-This checkout is not proof of correct-new adoption.
+Status: active component, current checkout on protos 0.30.0, datom-codec
+0.26.1 and ethos-zero 8.0.0.
