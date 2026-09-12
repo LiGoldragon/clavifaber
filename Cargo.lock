@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "clavifaber"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64ct",
  "const-oid",
@@ -142,8 +142,8 @@ dependencies = [
 
 [[package]]
 name = "datom-codec"
-version = "0.26.1"
-source = "git+https://github.com/LiGoldragon/datom-codec?rev=18129314966c5043ee659de452b6f976fa319b21#18129314966c5043ee659de452b6f976fa319b21"
+version = "0.26.3"
+source = "git+https://github.com/LiGoldragon/datom-codec?rev=627db67f2655efd9f786864009955005fd8ab2ad#627db67f2655efd9f786864009955005fd8ab2ad"
 dependencies = [
  "datom-codec-derive",
  "protos",
@@ -152,7 +152,7 @@ dependencies = [
 [[package]]
 name = "datom-codec-derive"
 version = "0.26.0"
-source = "git+https://github.com/LiGoldragon/datom-codec?rev=18129314966c5043ee659de452b6f976fa319b21#18129314966c5043ee659de452b6f976fa319b21"
+source = "git+https://github.com/LiGoldragon/datom-codec?rev=627db67f2655efd9f786864009955005fd8ab2ad#627db67f2655efd9f786864009955005fd8ab2ad"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -684,8 +684,8 @@ dependencies = [
 
 [[package]]
 name = "protos"
-version = "0.30.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=e8701521a37c698d6a2eb933618b9d5d1c6f6ffb#e8701521a37c698d6a2eb933618b9d5d1c6f6ffb"
+version = "0.30.1"
+source = "git+https://github.com/LiGoldragon/protos?rev=171b21f65337983ab624b7b906397a4f1f92c5a3#171b21f65337983ab624b7b906397a4f1f92c5a3"
 
 [[package]]
 name = "quote"
