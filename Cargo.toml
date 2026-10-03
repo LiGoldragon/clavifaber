@@ -1,6 +1,6 @@
 [package]
 name = "clavifaber"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.89"
 description = "CriomOS host key-material provisioning tool."
@@ -30,11 +30,19 @@ sha2 = "0.10"
 hex = "0.4"
 const-oid = "0.9"
 thiserror = "2"
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "1febca7836bf8d5f5973a302fdd50aa9c84c159b" }
-datom-codec = { git = "https://github.com/LiGoldragon/datom-codec", rev = "09e2a9d52bf7f2f11e51d15cb6c3177f72c6c927" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "15b41da8f2579e73ead59bc0c2b97529b8ac32d3", features = ["rkyv"] }
+datom-codec = { git = "https://github.com/LiGoldragon/datom-codec", rev = "4dff16b4f7412febc3b71aac8b49680cd20988cb", features = ["rkyv"] }
 kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 serde_json = "1"
+rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+
+[features]
+# Generated Datomizable/Composing derives sit behind this feature. The crate's
+# Error, actors and tests name datom-codec unconditionally, so the dependency
+# is not optional and the feature is on by default.
+default = ["datom"]
+datom = []
 
 [dev-dependencies]
 tempfile = "3"
