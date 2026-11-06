@@ -1,5 +1,9 @@
 # Upgrades
 
+## 0.8.1
+
+Selects the Rust toolchain by version, `1.99.1`, in place of the floating `stable` channel. The channel manifest for 1.99.1 (rustc 1.99.1, 58cf8f9c3, 2026-10-13, manifest dated 2026-10-15) is byte-identical to what `stable` served, verified by hash `sha256-+xUr6Al1wZSqX8aEsq7DpuFOK4Ve/i+qTl+K5uWQ9GM=`, so the flake's integrity hash is unchanged. Components and profile are unchanged. The 0.8.0 stale-hash failure came from `stable` moving: specified `sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=`, got `sha256-+xUr6Al1wZSqX8aEsq7DpuFOK4Ve/i+qTl+K5uWQ9GM=`. A version moves to a patch release when it changes only the build's pins. No source, API or state change.
+
 ## 0.8.0
 
 Repins protos 0.33.0 (3c7a), datom-codec 0.33.0 (eabe) and ethos-zero 19.2.0 (5a5d, flake input now the bare URL, the lock pins).
