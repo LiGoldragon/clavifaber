@@ -28,9 +28,8 @@ const COMMAND_DEPTH: i64 = 4_096;
 fn command_budget() -> Budget {
     Budget {
         remaining: COMMAND_BUDGET,
-        reader: protos::ReaderBudget {
-            remaining: COMMAND_READER_BUDGET,
-        },
+        reader: protos::ReaderBudget::try_from(COMMAND_READER_BUDGET)
+            .expect("the command reader budget is within range"),
         depth: 0,
         maximum_depth: COMMAND_DEPTH,
     }

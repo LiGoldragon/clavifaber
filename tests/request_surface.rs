@@ -16,7 +16,7 @@ fn text(value: &str) -> String {
 fn budget() -> Budget {
     Budget {
         remaining: 4_096,
-        reader: protos::ReaderBudget { remaining: 16_384 },
+        reader: protos::ReaderBudget::try_from(16_384).unwrap(),
         depth: 0,
         maximum_depth: 4_096,
     }

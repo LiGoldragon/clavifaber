@@ -10,7 +10,7 @@
     };
 
     ethos-zero = {
-      url = "github:LiGoldragon/ethos-zero/c2653dd82adbdb1f1f2f654405c6620e0d06fd58";
+      url = "github:LiGoldragon/ethos-zero";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -36,7 +36,7 @@
           pkgs = import nixpkgs { inherit system; };
           rust = rust-build.lib.${system}.fromToolchainFile pkgs {
             file = ./rust-toolchain.toml;
-            sha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
+            sha256 = "sha256-+xUr6Al1wZSqX8aEsq7DpuFOK4Ve/i+qTl+K5uWQ9GM=";
           };
 
           inherit (rust) craneLib toolchain;

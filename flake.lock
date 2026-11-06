@@ -137,17 +137,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791003860,
-        "narHash": "sha256-5yoo6p3mS/du8ajWob4y0SiIZvdh2enVyxnriSy8rjo=",
+        "lastModified": 1793984317,
+        "narHash": "sha256-T25440qwkh6WlwK7pXZO4n6iEdsJUZYYtQnXPGVRWNw=",
         "owner": "LiGoldragon",
         "repo": "datom-codec",
-        "rev": "4dff16b4f7412febc3b71aac8b49680cd20988cb",
+        "rev": "eabead48b31e8d4f429d7fb156dd18548bbd79c1",
         "type": "github"
       },
       "original": {
         "owner": "LiGoldragon",
         "repo": "datom-codec",
-        "rev": "4dff16b4f7412febc3b71aac8b49680cd20988cb",
         "type": "github"
       }
     },
@@ -404,17 +403,16 @@
         "rust-build": "rust-build_7"
       },
       "locked": {
-        "lastModified": 1791007874,
-        "narHash": "sha256-DInSt3pdZSvrDN9zTxmCPVMvaXFILX+ulEYx3FlNxeY=",
+        "lastModified": 1793997443,
+        "narHash": "sha256-U1k7KoWtaNW6WW+xmoEzOlqCDVtixW6QwuoDDF/dPFk=",
         "owner": "LiGoldragon",
         "repo": "ethos-zero",
-        "rev": "c2653dd82adbdb1f1f2f654405c6620e0d06fd58",
+        "rev": "5a5daca315ab24460ccbcd5038130c453e853e6e",
         "type": "github"
       },
       "original": {
         "owner": "LiGoldragon",
         "repo": "ethos-zero",
-        "rev": "c2653dd82adbdb1f1f2f654405c6620e0d06fd58",
         "type": "github"
       }
     },
@@ -437,7 +435,6 @@
       "original": {
         "owner": "LiGoldragon",
         "repo": "ethos-zero",
-        "rev": "06d73e07ec7a133348e9e46511011a50f641b776",
         "type": "github"
       }
     },
@@ -506,7 +503,6 @@
       "original": {
         "owner": "LiGoldragon",
         "repo": "ethos-zero",
-        "rev": "06d73e07ec7a133348e9e46511011a50f641b776",
         "type": "github"
       }
     },
@@ -1279,17 +1275,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791003800,
-        "narHash": "sha256-Sf0CeqeUnfNkPAjz/a5CbJK4Kx1eM+429zll3qtV1VA=",
+        "lastModified": 1793983984,
+        "narHash": "sha256-ehjUoKl6OadQds1S/+MwgZCt/HV/q5tm7+Cgddg7PLM=",
         "owner": "LiGoldragon",
         "repo": "protos",
-        "rev": "15b41da8f2579e73ead59bc0c2b97529b8ac32d3",
+        "rev": "3c7ade34010cec6cec153ae694ee335f7fea0193",
         "type": "github"
       },
       "original": {
         "owner": "LiGoldragon",
         "repo": "protos",
-        "rev": "15b41da8f2579e73ead59bc0c2b97529b8ac32d3",
         "type": "github"
       }
     },
